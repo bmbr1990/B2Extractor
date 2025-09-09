@@ -12,7 +12,7 @@ The project automatically reconstructs the file structure, supports Oodle decomp
 ## Features
 
 - 📦 **File extraction** from `.b2index` and associated `.b2container`.
-- 🔄 **Oodle support (oo2core_7_win64.dll)**  ** FILE NOT INCLUDED**
+- 🔄 **Oodle support (oo2core_7_win64.dll)**  **FILE NOT INCLUDED**
 - 📂 **Full path recovery** Based on `.uasset/.umap` headers.
 - 🎛️ **Filtering options**:
   - Skip WEM files
