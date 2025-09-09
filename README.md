@@ -12,7 +12,7 @@ The project automatically reconstructs the file structure, supports Oodle decomp
 ## Features
 
 - 📦 **File extraction** from `.b2index` and associated `.b2container`.
-- 🔄 **Oodle support (oo2core_7_win64.dll)**  **NOT INCLUDED**
+- 🔄 **Oodle support (oo2core_7_win64.dll)**  ** FILE NOT INCLUDED**
 - 📂 **Full path recovery** Based on `.uasset/.umap` headers.
 - 🎛️ **Filtering options**:
   - Skip WEM files
@@ -66,7 +66,7 @@ Projekt automatycznie odtwarza strukturę plików, obsługuje dekompresję Oodle
 ## Funkcje
 
 - 📦 **Ekstrakcja plików** z `.b2index` i powiązanych `.b2container`.
-- 🔄 **Obsługa Oodle (oo2core_7_win64.dll)** **NIE DOŁĄCZONO**
+- 🔄 **Obsługa Oodle (oo2core_7_win64.dll)** **NIE DOŁĄCZONO PLIKU**
 - 📂 **Odzyskiwanie pełnych ścieżek** Na podstawie nagłówków plików `.uasset/.umap`.
 - 🎛️ **Opcje filtrowania**:
 	- Pomijanie plików WEM
