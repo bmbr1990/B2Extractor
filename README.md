@@ -28,7 +28,7 @@ The project automatically reconstructs the file structure, supports Oodle decomp
 ## Requirements
 
 - **.NET 6/7/8+** (WPF)
-- **oo2core_7_win64.dll** file in the program directory
+- **oo2core_7_win64.dll** file in the program directory - can be found in modern games like Elden Ring or Smire, or downloaded from Google ( on your own responsibility )
 
 ---
 
@@ -82,7 +82,7 @@ Projekt automatycznie odtwarza strukturę plików, obsługuje dekompresję Oodle
 ## Wymagania
 
 - **.NET 6/7/8+** (WPF)
-- Plik **oo2core_7_win64.dll** w katalogu programu
+- Plik **oo2core_7_win64.dll** w katalogu programu, Można znaleźć ten plik w grach wydanych po 2018 jak Smite, Elden Ring albo można wyszukać w google (na własną odpowiedzialność)
 
 ---
 
