@@ -44,12 +44,6 @@ namespace B2IndexExtractor
         public bool SkipResAndAce { get; set; } = false;
         public bool SkipConfigFiles { get; set; } = false;
         public bool OnlyAssets { get; set; } = false;
-        /// <summary>
-        /// Force name search mode "QuickBMS Name Search" (records: NAME_OFF, FILE_NUMBER, CHILD).
-        /// If false, tool will try QuickBMS mode, but on fail it uses default method.
-        /// </summary>
-        public bool ForceQuickBmsNameScan { get; set; } = true;
-
         public Action<double>? Progress { get; set; }
         public Action<string>? Logger { get; set; }
     }
