@@ -1,0 +1,65 @@
+<Window x:Class="B2IndexExtractor.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="B2Index Extractor" Height="430" Width="900" MinHeight="380" MinWidth="720">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+
+        <TextBlock Grid.Row="0" Grid.Column="0" Margin="0,0,8,0" VerticalAlignment="Center" Text="Path to .b2index:"/>
+        <TextBox x:Name="IndexPathBox" Grid.Row="0" Grid.Column="1" Height="28" VerticalContentAlignment="Center"/>
+        <Button Grid.Row="0" Grid.Column="2" Margin="8,0,0,0" Padding="16,6" Click="BrowseIndex_Click">Browse…</Button>
+
+        <TextBlock Grid.Row="1" Grid.Column="0" Margin="0,8,8,0" VerticalAlignment="Center" Text="Output Directory:"/>
+        <TextBox x:Name="OutputPathBox" Grid.Row="1" Grid.Column="1" Height="28" Margin="0,8,0,0" VerticalContentAlignment="Center"/>
+        <Button Grid.Row="1" Grid.Column="2" Margin="8,8,0,0" Padding="16,6" Click="BrowseOutput_Click">Browse…</Button>
+
+        <WrapPanel Grid.Row="2" Grid.ColumnSpan="3" Orientation="Horizontal" Margin="0,8,0,0">
+            
+                <CheckBox x:Name="UseHeaderPath" IsChecked="True" Margin="0,0,15,5">
+                    <TextBlock>Detect Path from UAsset header</TextBlock>
+                </CheckBox>
+                <CheckBox x:Name="UseContentHeuristic" IsChecked="True" Margin="0,0,15,5">
+                    <TextBlock>Detect Path from UAsset Content</TextBlock>
+            </CheckBox>
+            <CheckBox x:Name="OnlyAssetsCheckBox"  Margin="0,0,15,5">
+                <TextBlock>Only Assets Mode
+                </TextBlock>
+            </CheckBox>
+            <Label Content="                                                         " Margin="0,0,15,5"/>
+            <CheckBox x:Name="SkipWemCheckBox" IsChecked="False"  Margin="0,0,15,5">
+                    <TextBlock>Skip WEM files (both WEM and .wem)
+                    </TextBlock>
+                </CheckBox>
+            <CheckBox x:Name="SkipBinkCheckBox" IsChecked="False" Margin="0,0,15,5">
+                    <TextBlock>Skip Bink files(.bik/.bk2)
+                    </TextBlock>
+                </CheckBox>
+            <CheckBox x:Name="SkipResAceCheckBox" Margin="0,0,15,5">
+                    <TextBlock>Skip *.res and *.ace
+                    </TextBlock>
+                </CheckBox>
+            <CheckBox x:Name="SkipConfigsCheckBox" Margin="0,0,15,5">
+                    <TextBlock>Skip Config Files
+                    </TextBlock>
+                </CheckBox>
+        </WrapPanel>
+
+        <TextBox x:Name="LogBox" Grid.Row="3" Grid.ColumnSpan="3" Margin="0,12,0,12" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" AcceptsReturn="True"/>
+
+        <StackPanel Grid.Row="4" Grid.ColumnSpan="3" Orientation="Horizontal" HorizontalAlignment="Right">
+            <ProgressBar x:Name="Progress" Width="480" Height="18" Margin="0,0,12,0" Minimum="0" Maximum="100"/>
+            <Button x:Name="ExtractBtn" Padding="24,8" Click="ExtractBtn_Click">Extract</Button>
+        </StackPanel>
+    </Grid>
+</Window>
