@@ -8,5 +8,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>B2IndexExtractor</AssemblyName>
     <RootNamespace>B2IndexExtractor</RootNamespace>
+    <StartupObject>B2IndexExtractor.App</StartupObject>
+    <ApplicationIcon>Icon.ico</ApplicationIcon>
   </PropertyGroup>
+  <ItemGroup>
+    <Content Include="Icon.ico" />
+  </ItemGroup>
 </Project>
