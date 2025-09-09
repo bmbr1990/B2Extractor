@@ -46,7 +46,7 @@ The project automatically reconstructs the file structure, supports Oodle decomp
 ## License
 
 This project is licensed under the **GNU General Public License v3.0**.  
-See the [LICENSE.TXT](LICENSE.TXT) file for details.
+See the [LICENSE.txt](LICENSE.txt) file for details.
 
 # B2Extractor
 
@@ -100,7 +100,7 @@ Projekt automatycznie odtwarza strukturę plików, obsługuje dekompresję Oodle
 ## Licencja
 
 Ten projekt jest objęty licencją **GNU General Public License v3.0**.  
-Szczegóły znajdziesz w pliku [LICENSE.TXT](LICENSE.TXT).
+Szczegóły znajdziesz w pliku [LICENSE.txt](LICENSE.txt).
 
 
 
