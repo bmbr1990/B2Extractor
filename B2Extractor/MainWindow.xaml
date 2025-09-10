@@ -32,11 +32,12 @@
             <CheckBox x:Name="UseContentHeuristic" IsChecked="True" Margin="0,5,15,5" ToolTip="Analyze package content to guess the original folder path when header info is missing.">
                     <TextBlock>Detect Path from UAsset Content</TextBlock>
             </CheckBox>
-            <CheckBox x:Name="OnlyAssetsCheckBox"  Margin="0,5,15,5" ToolTip="Extract only asset-related files (.uasset, .ubulk, .umap) and skip others. Should greatly improve extraction time."  Checked="OnlyAssetsCheckBox_Checked" Unchecked="OnlyAssetsCheckBox_Unchecked">
-                <TextBlock>Only Assets Mode
+            <CheckBox x:Name="OnlyAssetsCheckBox"  Margin="0,5,15,5" ToolTip="Extract only asset-related files (.uasset, .ubulk, .umap) and skip others."  Checked="OnlyAssetsCheckBox_Checked" Unchecked="OnlyAssetsCheckBox_Unchecked">
+                <TextBlock>Extract Assets Only
                 </TextBlock>
             </CheckBox>
-            <Label Content="Log output Detail Level: " Margin="0,0,15,5"/>
+            <Label Content="Log Verbosity:
+                   " Margin="0,0,15,5" Width="97"/>
             <ComboBox x:Name="LogLevelComboBox" SelectedIndex="0" Margin="0,0,15,6" Width="100" ToolTip="Choose how much information should be displayed during extraction.">
                 <ComboBoxItem Content="Full" ToolTip="Show all logs (detailed output)."/>
                 <ComboBoxItem Content="Warnings" ToolTip="Show warnings, errors, and summary every 100 files."/>
@@ -46,18 +47,18 @@
                 <ComboBoxItem Content="None" ToolTip="Do not show any logs (completely silent)."/>
             </ComboBox>
             <CheckBox x:Name="SkipWemCheckBox" IsChecked="False"  Margin="0,0,15,5" ToolTip="Do not extract audio files with .wem extension (usually sound banks).  Should greatly improve extraction time.">
-                    <TextBlock>Skip WEM files (both WEM and .wem)
-                    </TextBlock>
+                <TextBlock ToolTip="Skips audio files (*.wem) and WEM related assets.">Skip Audio Files
+                </TextBlock>
                 </CheckBox>
             <CheckBox x:Name="SkipBinkCheckBox" IsChecked="False" Margin="0,0,15,5" ToolTip="Do not extract Bink video files (.bik, .bk2). Should slightly improve extraction time">
-                    <TextBlock>Skip Bink files(.bik/.bk2)
-                    </TextBlock>
+                <TextBlock ToolTip="Skips *.bk2 video files">Skip Video Files
+                </TextBlock>
                 </CheckBox>
             <CheckBox x:Name="SkipResAceCheckBox" Margin="0,0,15,5" ToolTip="Do not extract .res and .ace resource files. Should improve extraction time">
-                    <TextBlock>Skip *.res and *.ace
-                    </TextBlock>
+                <TextBlock ToolTip="Skips localization files (*.res) and Acoustics Files (*.ace)">Skip Misc Files
+                </TextBlock>
                 </CheckBox>
-            <CheckBox x:Name="SkipConfigsCheckBox" Margin="0,0,15,5" ToolTip="Do not extract config files (.ini, .json, .xml, etc.). Should slightly improve extraction time">
+            <CheckBox x:Name="SkipConfigsCheckBox" Margin="0,0,15,5" ToolTip="Skips configuration files (.ini, .json, .xml, etc.).">
                     <TextBlock>Skip Config Files
                     </TextBlock>
                 </CheckBox>
