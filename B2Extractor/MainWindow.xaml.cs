@@ -56,9 +56,13 @@ namespace B2IndexExtractor
         private void OnlyAssetsCheckBox_Checked(object sender, RoutedEventArgs e)
         {
             // disable skip checkboxes
+            SkipWemCheckBox.IsChecked = true;
             SkipWemCheckBox.IsEnabled = false;
+            SkipBinkCheckBox.IsChecked = true;
             SkipBinkCheckBox.IsEnabled = false;
+            SkipResAceCheckBox.IsChecked = true;
             SkipResAceCheckBox.IsEnabled = false;
+            SkipConfigsCheckBox.IsChecked = true;
             SkipConfigsCheckBox.IsEnabled = false;
         }
 
@@ -66,9 +70,13 @@ namespace B2IndexExtractor
         {
             // re-enable skip checkboxes
             SkipWemCheckBox.IsEnabled = true;
+            SkipWemCheckBox.IsChecked = false;
             SkipBinkCheckBox.IsEnabled = true;
+            SkipBinkCheckBox.IsChecked = false;
             SkipResAceCheckBox.IsEnabled = true;
+            SkipResAceCheckBox.IsChecked = false;
             SkipConfigsCheckBox.IsEnabled = true;
+            SkipConfigsCheckBox.IsChecked = false;
         }
 
         private async void ExtractBtn_Click(object sender, RoutedEventArgs e)
