@@ -1,18 +1,18 @@
 # B2Extractor
 
-# EN:
+## 📥 Download
 
+You can download the latest release here:  
+👉 [Latest Release](https://github.com/bmbr1990/B2Extractor/releases/latest)
+
+
+# EN:
 
 **B2IndexExtractor** is a C#/.NET (WPF) tool for extracting the contents of **.b2index** files and related **.b2container** archives (from the games Gears 5 and Gears Tactics).  
 
 The project automatically reconstructs the file structure, supports Oodle decompression, and includes mechanisms for recovering full file paths.
 
 ---
-
-## 📥 Download
-
-You can download the latest release here:  
-👉 [Latest Release](https://github.com/bmbr1990/B2Extractor/releases/latest)
 
 ## Features
 
