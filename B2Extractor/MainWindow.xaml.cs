@@ -40,7 +40,9 @@ namespace B2IndexExtractor
             {
                 IndexPathBox.Text = ofd.FileName;
                 if (string.IsNullOrWhiteSpace(OutputPathBox.Text))
-                    OutputPathBox.Text = System.IO.Path.GetDirectoryName(ofd.FileName) ?? "";
+                {
+                    OutputPathBox.Text = System.IO.Path.GetDirectoryName(ofd.FileName) + "\\Extracted" ?? "";
+                }
             }
         }
 
