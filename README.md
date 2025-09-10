@@ -9,6 +9,11 @@ The project automatically reconstructs the file structure, supports Oodle decomp
 
 ---
 
+## 📥 Download
+
+You can download the latest release here:  
+👉 [Latest Release](https://github.com/bmbr1990/B2Extractor/releases/latest)
+
 ## Features
 
 - 📦 **File extraction** from `.b2index` and associated `.b2container`.
@@ -48,20 +53,17 @@ The project automatically reconstructs the file structure, supports Oodle decomp
 This project is licensed under the **GNU General Public License v3.0**.  
 See the [LICENSE.txt](LICENSE.txt) file for details.
 
-# B2Extractor
-
-
-
-**B2IndexExtractor** to narzędzie w C#/.NET (WPF) do wypakowywania zawartości z plików **.b2index** i powiązanych kontenerów **.b2container** (gier Gears 5 i Gears Tactics).  
-
-Projekt automatycznie odtwarza strukturę plików, obsługuje dekompresję Oodle oraz zawiera mechanizmy odzyskiwania pełnych ścieżek.
-
-
-
 ---
 
 # PL:
 
+**B2IndexExtractor** to narzędzie w C#/.NET (WPF) do wypakowywania zawartości z plików **.b2index** i powiązanych kontenerów **.b2container** (gier Gears 5 i Gears Tactics).  
+Projekt automatycznie odtwarza strukturę plików, obsługuje dekompresję Oodle oraz zawiera mechanizmy odzyskiwania pełnych ścieżek.
+
+## 📥 Download
+
+Możesz pobrać aktualną wersje pod tym linkiem:  
+👉 [Aktualna Wersja](https://github.com/bmbr1990/B2Extractor/releases/latest)
 
 ## Funkcje
 
