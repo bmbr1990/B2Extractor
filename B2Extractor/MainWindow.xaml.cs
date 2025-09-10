@@ -100,7 +100,7 @@ namespace B2IndexExtractor
                     OutputDirectory = outDir,
                     SkipWemFiles = SkipWemCheckBox.IsChecked == true,
                     SkipBinkFiles = SkipBinkCheckBox.IsChecked == true,
-                    SkipExistingFiles = true, 
+                    SkipExistingFiles = true,
                     EnableHeaderPath = UseHeaderPath.IsChecked == true,
                     EnableContentPath = UseContentHeuristic.IsChecked == true,
                     SkipResAndAce = SkipResAceCheckBox.IsChecked == true,
@@ -130,10 +130,10 @@ namespace B2IndexExtractor
         private void AppendLog(string msg)
         {
             _logCounter++;
-            bool isError = msg.StartsWith("❌") ||  msg.StartsWith("💥");
+            bool isError = msg.StartsWith("❌") || msg.StartsWith("💥");
             bool isWarning = msg.StartsWith("⚠️");
             bool bCanLog = false;
-            switch (ExtractOptions?.LogLevel)
+            switch (ExtractOptions.LogLevel)
             {
                 case LogLevel.None:
                     bCanLog = false;
@@ -141,7 +141,7 @@ namespace B2IndexExtractor
 
                 case LogLevel.Silent:
                     if (isError || isWarning || msg.StartsWith("✅") || msg.StartsWith("❌") || msg.StartsWith("💥"))
-                    bCanLog = true;
+                        bCanLog = true;
                     break;
 
                 case LogLevel.Minimal:
@@ -192,8 +192,8 @@ namespace B2IndexExtractor
                 }
 
                 // UI holds 20 recent lines - prevents textbox from eating too much memory
-                if(ExtractOptions?.LogLevel != LogLevel.Silent)
-                LogBox.AppendText(line);
+                if (ExtractOptions.LogLevel != LogLevel.Silent)
+                    LogBox.AppendText(line);
                 var lines = LogBox.Text.Split(new[] { Environment.NewLine }, StringSplitOptions.None);
                 if (lines.Length > 20)
                 {
