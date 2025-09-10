@@ -14,12 +14,12 @@ namespace B2IndexExtractor
     {
         public enum LogLevel
         {
-            Full,       // wszystkie logi
-            Warnings,   // błędy + zbiorczo co 100 plików
-            Error,      // błędy + zbiorczo co 1000
-            Minimal,    // błędy + zbiorczo co 10000
-            Silent,     // tylko błędy + start/stop
-            None        // nic
+            Full,       // Log Everything. - wszystkie logi
+            Warnings,   // Cumulatively log warnings every 100 files. - błędy + zbiorczo co 100 plików
+            Error,      // Cumulatively log errors every 1000 files. - błędy + zbiorczo co 1000
+            Minimal,    // Cumulatively log errors every 10000 files. - błędy + zbiorczo co 10000
+            Silent,     // Only log errors, and system messages. - tylko błędy + start/stop
+            None        // No logging - nic
         }
 
         private ExtractOptions? ExtractOptions;
@@ -40,7 +40,9 @@ namespace B2IndexExtractor
             {
                 IndexPathBox.Text = ofd.FileName;
                 if (string.IsNullOrWhiteSpace(OutputPathBox.Text))
-                    OutputPathBox.Text = System.IO.Path.GetDirectoryName(ofd.FileName) ?? "";
+                {
+                    OutputPathBox.Text = System.IO.Path.GetDirectoryName(ofd.FileName) + "\\Extracted" ?? "";
+                }
             }
         }
 
