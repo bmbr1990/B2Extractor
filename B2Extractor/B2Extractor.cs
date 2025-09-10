@@ -1,3 +1,4 @@
+
 using System;
 using System.Buffers;
 using System.Collections.Generic;
@@ -11,26 +12,18 @@ namespace B2IndexExtractor
 {
     internal static class WemUtils
     {
-        private static readonly Regex WemNameRegex =
-       new Regex(@"^WEM\d+(\.[A-Za-z0-9_]+)?$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
         /// <summary>
-        /// returns true if:
-        /// - WEM<number>.*  (np. WEM12345.wem, WEM9999.uasset)
-        /// - or any other file with .wem extension (example: sound.wem)
+        /// Checks if a file path contains "wwiseaudio" folder.
         /// </summary>
-        public static bool IsWemNumberFile(string fileName)
+        public static bool IsInWwiseAudioFolder(string filePath)
         {
-            if (string.IsNullOrWhiteSpace(fileName))
+            if (string.IsNullOrWhiteSpace(filePath))
                 return false;
 
-            string justName = Path.GetFileNameWithoutExtension(fileName);
-            string withExt = Path.GetFileName(fileName);
+            string normalizedPath = filePath.Replace('\\', '/').ToLowerInvariant();
 
-            if (WemNameRegex.IsMatch(justName) || WemNameRegex.IsMatch(withExt))
-                return true;
-
-            return Path.GetExtension(fileName).Equals(".wem", StringComparison.OrdinalIgnoreCase);
+            // Check if the path contains "/wwiseaudio/" or "wwisetriton/"
+            return normalizedPath.Contains("/wwiseaudio/") || normalizedPath.StartsWith("wwiseaudio/") || normalizedPath.Contains("/wwisetriton/") || normalizedPath.StartsWith("wwisetriton/");
         }
     }
 
@@ -98,7 +91,7 @@ namespace B2IndexExtractor
                 var quickList = ParseNameEntriesQuickBms(fs, br, nameMapOff, fileSize, options.Logger);
                 var quickFiles = quickList.Where(ne => !ne.IsDirectory).ToList();
 
-				_usedRelPaths.Clear();
+                _usedRelPaths.Clear();
                 int processed = -1;
                 int total = Math.Max(1, quickFiles.Count);
 
@@ -119,7 +112,7 @@ namespace B2IndexExtractor
                             || name.EndsWith(".uasset2", StringComparison.OrdinalIgnoreCase)
                             || name.EndsWith(".umap", StringComparison.OrdinalIgnoreCase);
 
-                        if (!isAsset && !WemUtils.IsWemNumberFile(name))
+                        if (!isAsset)
                         {
                             options.Logger?.Invoke($"⏭️ Skipping (Only Assets Mode): {name}");
                             continue;
@@ -138,11 +131,6 @@ namespace B2IndexExtractor
                             }
                         }
 
-                        if (options.SkipWemFiles && WemUtils.IsWemNumberFile(name))
-                        {
-                            options.Logger?.Invoke($"⏭️ Skipping WEM file: {name}");
-                            continue;
-                        }
                         if (options.SkipResAndAce &&
                             (name.EndsWith(".res", StringComparison.OrdinalIgnoreCase) ||
                              name.EndsWith(".ace", StringComparison.OrdinalIgnoreCase)))
@@ -278,6 +266,14 @@ namespace B2IndexExtractor
                                 destRel = NormalizeRelPath(guessed + ext);
                                 options.Logger?.Invoke($"🧭 Path generated from analyzing content: {destRel}");
                             }
+                        }
+
+                        // Check for WWise audio folder AFTER the path ishas been determined
+                        if (options.SkipWemFiles && WemUtils.IsInWwiseAudioFolder(destRel))
+                        {
+                            options.Logger?.Invoke($"⏭️ Skipping WWise Audio file: {destRel}");
+                            processed++;
+                            continue;
                         }
 
                         bool looksDir = LooksLikeDirectoryName(destRel);
