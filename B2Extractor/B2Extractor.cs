@@ -12,6 +12,28 @@ namespace B2IndexExtractor
 {
     internal static class WemUtils
     {
+       private static readonly Regex WemNameRegex =
+       new Regex(@"^WEM\d+(\.[A-Za-z0-9_]+)?$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        /// <summary>
+        /// returns true if:
+        /// - WEM<number>.*  (np. WEM12345.wem, WEM9999.uasset)
+        /// - or any other file with .wem extension (example: sound.wem)
+        /// </summary>
+        public static bool IsWemNumberFile(string fileName)
+        {
+            if (string.IsNullOrWhiteSpace(fileName))
+                return false;
+
+            string justName = Path.GetFileNameWithoutExtension(fileName);
+            string withExt = Path.GetFileName(fileName);
+
+            if (WemNameRegex.IsMatch(justName) || WemNameRegex.IsMatch(withExt))
+                return true;
+
+            return Path.GetExtension(fileName).Equals(".wem", StringComparison.OrdinalIgnoreCase);
+        }
+
         /// <summary>
         /// Checks if a file path contains "wwiseaudio" folder.
         /// </summary>
@@ -112,7 +134,7 @@ namespace B2IndexExtractor
                             || name.EndsWith(".uasset2", StringComparison.OrdinalIgnoreCase)
                             || name.EndsWith(".umap", StringComparison.OrdinalIgnoreCase);
 
-                        if (!isAsset)
+                        if (!isAsset && !WemUtils.IsWemNumberFile(name))
                         {
                             options.Logger?.Invoke($"⏭️ Skipping (Only Assets Mode): {name}");
                             continue;
@@ -129,6 +151,12 @@ namespace B2IndexExtractor
                                 options.Logger?.Invoke($"⏭️ {fileNameOnly} already exists in output — Skip.");
                                 continue;
                             }
+                        }
+
+                        if (options.SkipWemFiles && WemUtils.IsWemNumberFile(name))
+                        {
+                            options.Logger?.Invoke($"⏭️ Skipping WEM file: {name}");
+                            continue;
                         }
 
                         if (options.SkipResAndAce &&
