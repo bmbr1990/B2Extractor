@@ -91,8 +91,22 @@ namespace B2IndexExtractor
         public static void ExtractAll(string indexPath, ExtractOptions options)
         {
             options.Logger?.Invoke($"Opening index: {indexPath}");
+
+            string baseDir = Path.GetDirectoryName(indexPath)!;
+            var availableContainers = new HashSet<string>(
+                Directory.EnumerateFiles(baseDir, "*.b2container", SearchOption.TopDirectoryOnly)
+                         .Select(p => Path.GetFileName(p).ToLowerInvariant()),
+                StringComparer.OrdinalIgnoreCase);
+
+            options.Logger?.Invoke($"🗂️ Found {availableContainers.Count} .b2container files next to index.");
+
+            // (opcjonalnie) indeks istniejących outputów — pozwoli wyciąć duplikaty PRZED pętlą
+            ExistingOutputIndex? existingIndex = null;
             if (options.SkipExistingFiles)
-                BuildExistingNameIndex(options.OutputDirectory, options.Logger);
+            {
+                existingIndex = new ExistingOutputIndex(options.OutputDirectory);
+                options.Logger?.Invoke("📝 ExistingOutputIndex ready (full paths + triplets).");
+            }
 
             using var fs = new FileStream(indexPath, FileMode.Open, FileAccess.Read, FileShare.Read);
             using var br = new BinaryReader(fs, Encoding.UTF8, leaveOpen: true);
@@ -113,6 +127,164 @@ namespace B2IndexExtractor
                 var quickList = ParseNameEntriesQuickBms(fs, br, nameMapOff, fileSize, options.Logger);
                 var quickFiles = quickList.Where(ne => !ne.IsDirectory).ToList();
 
+                var containerNameByIndex = new Dictionary<int, string>();
+                {
+
+                    var neededIdx = quickFiles.Select(ne => ne.FileNumber).Distinct();
+
+                    foreach (int idx in neededIdx)
+                    {
+                        long row = entryOff + (long)idx * 16;
+                        if (row + 16 > fileSize) continue;
+
+                        fs.Seek(row, SeekOrigin.Begin);
+                        int blockOff = br.ReadInt32();
+                        _ = br.ReadInt32(); // blank
+                        _ = br.ReadInt32(); // absOff
+                        _ = br.ReadInt32(); // absSize
+
+                        if (blockOff <= 0 || blockOff >= fileSize)
+                            continue;
+
+                        long save = fs.Position;
+                        try
+                        {
+                            // Minimalne odtworzenie ResolveContainerPath, ale bez otwierania pliku
+                            fs.Seek(blockOff, SeekOrigin.Begin);
+                            ulong archiveSpecs = br.ReadUInt64();
+                            fs.Seek((long)archiveSpecs, SeekOrigin.Begin);
+                            int archiveOff = br.ReadInt32();
+                            fs.Seek(archiveOff, SeekOrigin.Begin);
+
+                            string archName = ReadCString(br);
+                            if (!archName.EndsWith(".b2container", StringComparison.OrdinalIgnoreCase))
+                                archName += ".b2container";
+
+                            string shortName = Path.GetFileName(archName); // sama nazwa pliku
+                            if (availableContainers.Contains(shortName))
+                            {
+                                // Mamy fizycznie obecny kontener -> zapisz mapowanie
+                                containerNameByIndex[idx] = shortName;
+                            }
+                        }
+                        catch
+                        {
+                            // ignoruj uszkodzone rekordy
+                        }
+                        finally
+                        {
+                            fs.Seek(save, SeekOrigin.Begin);
+                        }
+                    }
+                }
+                // === PREFILTER: sprawdź wszystko co możliwe bez czytania danych z kontenera ===
+                int beforeAll = quickFiles.Count;
+
+                // 1) Zostaw tylko wpisy, których kontener faktycznie istnieje.
+                //    Wykorzystujemy już zbudowane 'availableContainers' i 'containerNameByIndex' (jak w poprzedniej wstawce).
+                var withExistingContainer = new List<NameEntry>(quickFiles.Count);
+                foreach (var ne in quickFiles)
+                {
+                    if (containerNameByIndex.ContainsKey(ne.FileNumber))
+                        withExistingContainer.Add(ne);
+                }
+                quickFiles = withExistingContainer;
+                options.Logger?.Invoke($"🚦 Prefilter (containers present): {quickFiles.Count} / {beforeAll}");
+
+                // 2) Pełny filtr opcji po samym 'name' (bez odczytu kontenera)
+                int beforeOptions = quickFiles.Count;
+                var prefiltered = new List<NameEntry>(quickFiles.Count);
+
+                foreach (var ne in quickFiles)
+                {
+                    string name = ne.Name ?? string.Empty;
+                    containerNameByIndex.TryGetValue(ne.FileNumber, out var containerFileName);
+                    
+                    // --- NORMALIZACJA NAZWY ---
+                    string rel = NormalizeRelPath(name);               // bezpieczna ścieżka względna
+                    string fn = Path.GetFileName(rel);                // sama nazwa pliku
+                    string ext = Path.GetExtension(fn).ToLowerInvariant();
+
+                    bool isAsset = FileRouting.IsUbulk(fn)
+                        || ext == ".uasset"
+                        || ext == ".uasset2"
+                        || ext == ".umap";
+
+                    // Detekcja WEM
+                    bool isWemExt = (ext == ".wem");
+                    bool isWemNumber = WemUtils.IsWemNumberFile(fn);   // łapie WEM<digits>.* i *.wem
+                    bool isWemByPath = WemUtils.IsInWwiseAudioFolder(rel);
+
+                    // OnlyAssets → przepuszczamy tylko uasset/uasset2/umap/ubulk + (opcjonalnie) pliki WEM po nazwie
+                    if (options.OnlyAssets)
+                    { 
+                        if (!isAsset)
+                            continue; // ⏭️ nie-asset w trybie OnlyAssets
+
+                        // Jeżeli jednocześnie włączony SkipWem – od razu odetnij WEM-y tutaj
+                        if (options.SkipWemFiles && (isWemExt || isWemNumber || isWemByPath))
+                            continue; // ⏭️ WEM w OnlyAssets + SkipWem → wypad
+                    }
+
+                    // Localized/unlocalized → skip tylko gdy (OnlyAssets && SkipWem), zgodnie z Twoim wymaganiem
+                    if (LocalizationSkipper.ShouldSkipByLocalization(options.OnlyAssets, options.SkipWemFiles,
+                                                                     containerFileName ?? "", name))
+                        continue; // ⏭️ localized/unlocalized
+
+                    // SkipWem → po nazwie (WEM123/ *.wem) i po segmencie ścieżki (wwiseaudio/wwisetriton) jeśli da się wyczytać z ne.Name
+                    if (options.SkipWemFiles && (isWemExt || isWemNumber || isWemByPath))
+                        continue; // ⏭️ WEM po rozszerzeniu/liczbie/ścieżce
+                                  // (Uwaga: drugi check WWise po 'destRel' w pętli zostawiamy — patrz komentarz wyżej)
+
+                    // SkipRes/Ace
+                    string extLower = Path.GetExtension(name).ToLowerInvariant();
+                    if (options.SkipResAndAce && (extLower == ".res" || extLower == ".ace"))
+                        continue; // ⏭️ RES/ACE
+
+                    // SkipConfig
+                    if (options.SkipConfigFiles && FileRouting.ConfigExts.Contains(extLower))
+                        continue; // ⏭️ Config (ini/json/cfg/xml/toml/yaml/yml/properties/conf) :contentReference[oaicite:1]{index=1}
+
+                    // SkipBink
+                    if (options.SkipBinkFiles && (extLower == ".bik" || extLower == ".bk2"))
+                        continue; // ⏭️ Bink
+
+                    // SkipExisting → najpierw pełny indeks (ExistingOutputIndex), fallback do _existingNames
+                    if (options.SkipExistingFiles)
+                    {
+                        string relNorm = NormalizeRelPath(name);
+
+                        if (existingIndex != null)
+                        {
+                            if (existingIndex.HasExact(relNorm) ||
+                                existingIndex.HasByFileName(Path.GetFileName(relNorm)) ||
+                                (Path.GetExtension(relNorm).Equals(".uasset", StringComparison.OrdinalIgnoreCase) &&
+                                 existingIndex.HasAnyOfTriplet(relNorm)))
+                                continue; // ⏭️ już wyekstrahowane
+                        }
+                        else
+                        {
+                            // Fallback: stary mechanizm po samej nazwie (BuildExistingNameIndex) :contentReference[oaicite:2]{index=2}
+                            if (_existingNames.Contains(Path.GetFileName(relNorm)))
+                                continue; // ⏭️ już wyekstrahowane
+                        }
+                    }
+
+                    // Przeszedł wszystkie filtry — zostaje
+                    prefiltered.Add(ne);
+                }
+
+                quickFiles = prefiltered;
+                options.Logger?.Invoke($"🧹 Prefilter (options): {quickFiles.Count} / {beforeOptions}");
+
+                // Najpierw grupy po kontenerze (case-insensitive), w środku sort po FileNumber
+                quickFiles = quickFiles
+                    .GroupBy(ne => containerNameByIndex.TryGetValue(ne.FileNumber, out var cn) ? cn : "\uFFFF",
+                             StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase)
+                    .SelectMany(g => g.OrderBy(ne => ne.FileNumber))
+                    .ToList();
+
                 _usedRelPaths.Clear();
                 int processed = -1;
                 int total = Math.Max(1, quickFiles.Count);
@@ -126,62 +298,6 @@ namespace B2IndexExtractor
                     string name = ne.Name;
                     if (string.IsNullOrWhiteSpace(name))
                         name = $"file_{index:00000000}.bin";
-
-                    if (options.OnlyAssets)
-                    {
-                        bool isAsset = FileRouting.IsUbulk(name)
-                            || name.EndsWith(".uasset", StringComparison.OrdinalIgnoreCase)
-                            || name.EndsWith(".uasset2", StringComparison.OrdinalIgnoreCase)
-                            || name.EndsWith(".umap", StringComparison.OrdinalIgnoreCase);
-
-                        if (!isAsset && !WemUtils.IsWemNumberFile(name))
-                        {
-                            options.Logger?.Invoke($"⏭️ Skipping (Only Assets Mode): {name}");
-                            continue;
-                        }
-                    }
-                    else
-                    {
-                        // pre-skipy via existing name in output directory
-                        if (options.SkipExistingFiles)
-                        {
-                            string fileNameOnly = Path.GetFileName(NormalizeRelPath(name));
-                            if (_existingNames.Contains(fileNameOnly))
-                            {
-                                options.Logger?.Invoke($"⏭️ {fileNameOnly} already exists in output — Skip.");
-                                continue;
-                            }
-                        }
-
-                        if (options.SkipWemFiles && WemUtils.IsWemNumberFile(name))
-                        {
-                            options.Logger?.Invoke($"⏭️ Skipping WEM file: {name}");
-                            continue;
-                        }
-
-                        if (options.SkipResAndAce &&
-                            (name.EndsWith(".res", StringComparison.OrdinalIgnoreCase) ||
-                             name.EndsWith(".ace", StringComparison.OrdinalIgnoreCase)))
-                        {
-                            options.Logger?.Invoke($"⏭️ Skipping RES/ACE File: {name}");
-                            continue;
-                        }
-
-                        string extLower = Path.GetExtension(name).ToLowerInvariant();
-                        if (options.SkipConfigFiles && FileRouting.ConfigExts.Contains(extLower))
-                        {
-                            options.Logger?.Invoke($"⏭️ Skipping Config File: {name}");
-                            continue;
-                        }
-
-                        if (options.SkipBinkFiles &&
-                            (name.EndsWith(".bik", StringComparison.OrdinalIgnoreCase) ||
-                             name.EndsWith(".bk2", StringComparison.OrdinalIgnoreCase)))
-                        {
-                            options.Logger?.Invoke($"⏭️ Skipping Bink file: {name}");
-                            continue;
-                        }
-                    }
 
                     long fileOff = entryOff + (long)index * 16;
                     options.Progress?.Invoke(100.0 * processed / total);
@@ -214,13 +330,6 @@ namespace B2IndexExtractor
                             options.Logger?.Invoke($"❓ Missing/locked container: {containerPath} (#{index}) — {ex.Message}");
                             continue;
                         }
-                        /*
-                        if (!File.Exists(containerPath))
-                        {
-                            options.Logger?.Invoke($"❓ Missing Container: {containerPath} (entry #{index})");
-                            processed++;
-                            continue;
-                        }*/
                         // read base block metadata
                         fs.Seek(blockOff + 16, SeekOrigin.Begin);
                         ulong offset = br.ReadUInt64();
