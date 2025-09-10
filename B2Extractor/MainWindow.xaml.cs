@@ -133,7 +133,7 @@ namespace B2IndexExtractor
             bool isError = msg.StartsWith("❌") || msg.StartsWith("💥");
             bool isWarning = msg.StartsWith("⚠️");
             bool bCanLog = false;
-            switch (ExtractOptions.LogLevel)
+            switch (ExtractOptions?.LogLevel)
             {
                 case LogLevel.None:
                     bCanLog = false;
@@ -192,7 +192,7 @@ namespace B2IndexExtractor
                 }
 
                 // UI holds 20 recent lines - prevents textbox from eating too much memory
-                if (ExtractOptions.LogLevel != LogLevel.Silent)
+                if (ExtractOptions?.LogLevel != LogLevel.Silent)
                     LogBox.AppendText(line);
                 var lines = LogBox.Text.Split(new[] { Environment.NewLine }, StringSplitOptions.None);
                 if (lines.Length > 20)
