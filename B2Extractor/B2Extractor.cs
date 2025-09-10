@@ -99,11 +99,12 @@ namespace B2IndexExtractor
                 var quickFiles = quickList.Where(ne => !ne.IsDirectory).ToList();
 
 				_usedRelPaths.Clear();
-                int processed = 0;
+                int processed = -1;
                 int total = Math.Max(1, quickFiles.Count);
 
                 foreach (var ne in quickFiles)
                 {
+                    processed++;
                     int index = ne.FileNumber;
 
                     // ---- Name & path ----
@@ -118,7 +119,7 @@ namespace B2IndexExtractor
                             || name.EndsWith(".uasset2", StringComparison.OrdinalIgnoreCase)
                             || name.EndsWith(".umap", StringComparison.OrdinalIgnoreCase);
 
-                        if (!isAsset)
+                        if (!isAsset && !WemUtils.IsWemNumberFile(name))
                         {
                             options.Logger?.Invoke($"⏭️ Skipping (Only Assets Mode): {name}");
                             continue;
@@ -133,7 +134,6 @@ namespace B2IndexExtractor
                             if (_existingNames.Contains(fileNameOnly))
                             {
                                 options.Logger?.Invoke($"⏭️ {fileNameOnly} already exists in output — Skip.");
-                                processed++;
                                 continue;
                             }
                         }
@@ -141,7 +141,6 @@ namespace B2IndexExtractor
                         if (options.SkipWemFiles && WemUtils.IsWemNumberFile(name))
                         {
                             options.Logger?.Invoke($"⏭️ Skipping WEM file: {name}");
-                            processed++;
                             continue;
                         }
                         if (options.SkipResAndAce &&
@@ -164,7 +163,6 @@ namespace B2IndexExtractor
                              name.EndsWith(".bk2", StringComparison.OrdinalIgnoreCase)))
                         {
                             options.Logger?.Invoke($"⏭️ Skipping Bink file: {name}");
-                            processed++;
                             continue;
                         }
                     }
@@ -175,7 +173,6 @@ namespace B2IndexExtractor
                     if (fileOff < 0 || fileOff + 16 > fileSize)
                     {
                         options.Logger?.Invoke($"⏭️ Skipping entry #{index} (out of table range, off=0x{fileOff:X})");
-                        processed++;
                         continue;
                     }
 
@@ -188,7 +185,6 @@ namespace B2IndexExtractor
                     if (blockOff <= 0 || blockOff >= fileSize)
                     {
                         options.Logger?.Invoke($"⏭️ Skipping entry #{index} (blockOff=0x{blockOff:X})");
-                        processed++;
                         continue;
                     }
 
@@ -200,7 +196,6 @@ namespace B2IndexExtractor
                         catch (Exception ex)
                         {
                             options.Logger?.Invoke($"❓ Missing/locked container: {containerPath} (#{index}) — {ex.Message}");
-                            processed++;
                             continue;
                         }
                         /*
@@ -246,7 +241,6 @@ namespace B2IndexExtractor
                         if (absOff < 0 || absSize < 0 || absOff + absSize > full.Length)
                         {
                             options.Logger?.Invoke($"⏭️ Entry #{index}: Bad data range (absOff={absOff}, absSize={absSize}, full={full.Length})");
-                            processed++;
                             continue;
                         }
 
@@ -313,7 +307,6 @@ namespace B2IndexExtractor
                             if (outPath == null)
                             {
                                 options.Logger?.Invoke($"⏭️ Skipping (missing extension - probably a directory): {fileNameOnly}");
-                                processed++;
                                 continue;
                             }
 
@@ -333,7 +326,6 @@ namespace B2IndexExtractor
                         options.Logger?.Invoke($"⚠️ Bad Entry #{index}: {ex.Message}");
                     }
 
-                    processed++;
                     options.Progress?.Invoke(100.0 * processed / total);
                 }
 
