@@ -17,39 +17,47 @@
         </Grid.ColumnDefinitions>
 
         <TextBlock Grid.Row="0" Grid.Column="0" Margin="0,0,8,0" VerticalAlignment="Center" Text="Path to .b2index:"/>
-        <TextBox x:Name="IndexPathBox" Grid.Row="0" Grid.Column="1" Height="28" VerticalContentAlignment="Center"/>
-        <Button Grid.Row="0" Grid.Column="2" Margin="8,0,0,0" Padding="16,6" Click="BrowseIndex_Click">Browse…</Button>
+        <TextBox x:Name="IndexPathBox" Grid.Row="0" Grid.Column="1" Height="28" VerticalContentAlignment="Center" ToolTip="Path to the .b2index file." />
+        <Button Grid.Row="0" Grid.Column="2" Margin="8,0,0,0" Padding="16,6" Click="BrowseIndex_Click" ToolTip="Select a .b2index file to extract.">Browse…</Button>
 
         <TextBlock Grid.Row="1" Grid.Column="0" Margin="0,8,8,0" VerticalAlignment="Center" Text="Output Directory:"/>
-        <TextBox x:Name="OutputPathBox" Grid.Row="1" Grid.Column="1" Height="28" Margin="0,8,0,0" VerticalContentAlignment="Center"/>
-        <Button Grid.Row="1" Grid.Column="2" Margin="8,8,0,0" Padding="16,6" Click="BrowseOutput_Click">Browse…</Button>
+        <TextBox x:Name="OutputPathBox" Grid.Row="1" Grid.Column="1" Height="28" Margin="0,8,0,0" VerticalContentAlignment="Center" ToolTip="Path to the folder where extracted files will be saved." />
+        <Button Grid.Row="1" Grid.Column="2" Margin="8,8,0,0" Padding="16,6" Click="BrowseOutput_Click" ToolTip="Select the output directory for extracted files." >Browse…</Button>
 
         <WrapPanel Grid.Row="2" Grid.ColumnSpan="3" Orientation="Horizontal" Margin="0,8,0,0">
-            
-                <CheckBox x:Name="UseHeaderPath" IsChecked="True" Margin="0,0,15,5">
+
+            <CheckBox x:Name="UseHeaderPath" IsChecked="True" Margin="0,5,15,5" ToolTip="Try to reconstruct the original folder path from package headers.">
                     <TextBlock>Detect Path from UAsset header</TextBlock>
                 </CheckBox>
-                <CheckBox x:Name="UseContentHeuristic" IsChecked="True" Margin="0,0,15,5">
+            <CheckBox x:Name="UseContentHeuristic" IsChecked="True" Margin="0,5,15,5" ToolTip="Analyze package content to guess the original folder path when header info is missing.">
                     <TextBlock>Detect Path from UAsset Content</TextBlock>
             </CheckBox>
-            <CheckBox x:Name="OnlyAssetsCheckBox"  Margin="0,0,15,5">
+            <CheckBox x:Name="OnlyAssetsCheckBox"  Margin="0,5,15,5" ToolTip="Extract only asset-related files (.uasset, .ubulk, .umap) and skip others."  Checked="OnlyAssetsCheckBox_Checked" Unchecked="OnlyAssetsCheckBox_Unchecked">
                 <TextBlock>Only Assets Mode
                 </TextBlock>
             </CheckBox>
-            <Label Content="                                                         " Margin="0,0,15,5"/>
-            <CheckBox x:Name="SkipWemCheckBox" IsChecked="False"  Margin="0,0,15,5">
+            <Label Content="Log output Detail Level: " Margin="0,0,15,5"/>
+            <ComboBox x:Name="LogLevelComboBox" SelectedIndex="0" Margin="0,0,15,6" Width="100" ToolTip="Choose how much information should be displayed during extraction.">
+                <ComboBoxItem Content="Full" ToolTip="Show all logs (detailed output)."/>
+                <ComboBoxItem Content="Warnings" ToolTip="Show warnings, errors, and summary every 100 files."/>
+                <ComboBoxItem Content="Error" ToolTip="Show errors and summary every 1000 files."/>
+                <ComboBoxItem Content="Minimal" ToolTip="Show errors and summary every 10000 files."/>
+                <ComboBoxItem Content="Silent" ToolTip="Show only errors and start/finish messages (logs still saved to file)."/>
+                <ComboBoxItem Content="None" ToolTip="Do not show any logs (completely silent)."/>
+            </ComboBox>
+            <CheckBox x:Name="SkipWemCheckBox" IsChecked="False"  Margin="0,0,15,5" ToolTip="Do not extract audio files with .wem extension (usually sound banks).">
                     <TextBlock>Skip WEM files (both WEM and .wem)
                     </TextBlock>
                 </CheckBox>
-            <CheckBox x:Name="SkipBinkCheckBox" IsChecked="False" Margin="0,0,15,5">
+            <CheckBox x:Name="SkipBinkCheckBox" IsChecked="False" Margin="0,0,15,5" ToolTip="Do not extract Bink video files (.bik, .bk2).">
                     <TextBlock>Skip Bink files(.bik/.bk2)
                     </TextBlock>
                 </CheckBox>
-            <CheckBox x:Name="SkipResAceCheckBox" Margin="0,0,15,5">
+            <CheckBox x:Name="SkipResAceCheckBox" Margin="0,0,15,5" ToolTip="Do not extract .res and .ace resource files.">
                     <TextBlock>Skip *.res and *.ace
                     </TextBlock>
                 </CheckBox>
-            <CheckBox x:Name="SkipConfigsCheckBox" Margin="0,0,15,5">
+            <CheckBox x:Name="SkipConfigsCheckBox" Margin="0,0,15,5" ToolTip="Do not extract config files (.ini, .json, .xml, etc.).">
                     <TextBlock>Skip Config Files
                     </TextBlock>
                 </CheckBox>

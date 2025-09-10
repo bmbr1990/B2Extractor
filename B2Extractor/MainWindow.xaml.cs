@@ -5,11 +5,27 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Forms;
+using static System.Runtime.InteropServices.JavaScript.JSType;
+using static System.Windows.Forms.Design.AxImporter;
 
 namespace B2IndexExtractor
 {
     public partial class MainWindow : Window
     {
+        public enum LogLevel
+        {
+            Full,       // wszystkie logi
+            Warnings,   // błędy + zbiorczo co 100 plików
+            Error,      // błędy + zbiorczo co 1000
+            Minimal,    // błędy + zbiorczo co 10000
+            Silent,     // tylko błędy + start/stop
+            None        // nic
+        }
+
+        private ExtractOptions? ExtractOptions;
+
+        private static int _logCounter = 0;
+
         private string? _logFilePath;
         public MainWindow() { InitializeComponent(); }
 
@@ -35,6 +51,23 @@ namespace B2IndexExtractor
             if (fbd.ShowDialog() == System.Windows.Forms.DialogResult.OK)
                 OutputPathBox.Text = fbd.SelectedPath;
         }
+        private void OnlyAssetsCheckBox_Checked(object sender, RoutedEventArgs e)
+        {
+            // disable skip checkboxes
+            SkipWemCheckBox.IsEnabled = false;
+            SkipBinkCheckBox.IsEnabled = false;
+            SkipResAceCheckBox.IsEnabled = false;
+            SkipConfigsCheckBox.IsEnabled = false;
+        }
+
+        private void OnlyAssetsCheckBox_Unchecked(object sender, RoutedEventArgs e)
+        {
+            // re-enable skip checkboxes
+            SkipWemCheckBox.IsEnabled = true;
+            SkipBinkCheckBox.IsEnabled = true;
+            SkipResAceCheckBox.IsEnabled = true;
+            SkipConfigsCheckBox.IsEnabled = true;
+        }
 
         private async void ExtractBtn_Click(object sender, RoutedEventArgs e)
         {
@@ -52,7 +85,7 @@ namespace B2IndexExtractor
                 if (!NativeMethods.EnsureOodleLoaded())
                     AppendLog("⚠️ Could not preload oo2core_7_win64.dll. if it doesnot exist, decompression will fail.");
 
-                var options = new ExtractOptions
+                ExtractOptions = new ExtractOptions
                 {
                     OutputDirectory = outDir,
                     SkipWemFiles = SkipWemCheckBox.IsChecked == true,
@@ -65,11 +98,12 @@ namespace B2IndexExtractor
                     OnlyAssets = OnlyAssetsCheckBox.IsChecked == true,
                     Progress = (p) => Dispatcher.Invoke(() => Progress.Value = p),
                     Logger = (msg) => Dispatcher.Invoke(() => AppendLog(msg)),
+                    LogLevel = (LogLevel)LogLevelComboBox.SelectedIndex
                 };
 
                 _logFilePath = Path.Combine(outDir, "extract_log_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".log");
 
-                await Task.Run(() => B2Extractor.ExtractAll(indexPath, options));
+                await Task.Run(() => B2Extractor.ExtractAll(indexPath, ExtractOptions));
                 AppendLog("✅ Finished.");
             }
             catch (Exception ex)
@@ -85,33 +119,80 @@ namespace B2IndexExtractor
 
         private void AppendLog(string msg)
         {
-            const int maxLen = 200;
-            if (msg.Length > maxLen)
-                msg = msg.Substring(0, maxLen) + "…";
-
-            string line = $"[{DateTime.Now:HH: mm: ss}] {msg}{Environment.NewLine}";
-
-            // Save log in output directory
-            if (!string.IsNullOrEmpty(_logFilePath))
+            _logCounter++;
+            bool isError = msg.StartsWith("❌") ||  msg.StartsWith("💥");
+            bool isWarning = msg.StartsWith("⚠️");
+            bool bCanLog = false;
+            switch (ExtractOptions.LogLevel)
             {
-                try
+                case LogLevel.None:
+                    bCanLog = false;
+                    break;
+
+                case LogLevel.Silent:
+                    if (isError || isWarning || msg.StartsWith("✅") || msg.StartsWith("❌") || msg.StartsWith("💥"))
+                    bCanLog = true;
+                    break;
+
+                case LogLevel.Minimal:
+                    if (isError || isWarning || _logCounter % 10000 == 0 || msg.StartsWith("✅") || msg.StartsWith("❌"))
+                    {
+                        msg += $" Extracted 10000 files";
+                        bCanLog = true;
+                    }
+                    break;
+
+                case LogLevel.Error:
+                    if (isError || isWarning || _logCounter % 1000 == 0 || msg.StartsWith("✅") || msg.StartsWith("❌"))
+                    {
+                        msg += $" Extracted 1000 files";
+                        bCanLog = true;
+                    }
+                    break;
+
+                case LogLevel.Warnings:
+                    if (isError || isWarning || _logCounter % 100 == 0 || msg.StartsWith("✅") || msg.StartsWith("❌"))
+                    {
+                        msg += $" Extracted 100 files";
+                        bCanLog = true;
+                    }
+                    break;
+
+                case LogLevel.Full:
+                default:
+                    bCanLog = true;
+                    break;
+            }
+            if (bCanLog)
+            {
+                const int maxLen = 200;
+                if (msg.Length > maxLen)
+                    msg = msg.Substring(0, maxLen) + "…";
+
+                string line = $"[{DateTime.Now:HH: mm: ss}] {msg}{Environment.NewLine}";
+
+                // Save log in output directory
+                if (!string.IsNullOrEmpty(_logFilePath))
                 {
-                    File.AppendAllText(_logFilePath, line);
+                    try
+                    {
+                        File.AppendAllText(_logFilePath, line);
+                    }
+                    catch { /* ignore save error */ }
                 }
-                catch { /* ignore save error */ }
-            }
 
-            // UI holds 20 recent lines - prevents textbox from eating too much memory
-            LogBox.AppendText(line);
-            var lines = LogBox.Text.Split(new[] { Environment.NewLine }, StringSplitOptions.None);
-            if (lines.Length > 20)
-            {
-                string trimmed = string.Join(Environment.NewLine, lines.Skip(lines.Length - 20));
-                LogBox.Text = trimmed;
-                LogBox.CaretIndex = LogBox.Text.Length;
+                // UI holds 20 recent lines - prevents textbox from eating too much memory
+                if(ExtractOptions.LogLevel != LogLevel.Silent)
+                LogBox.AppendText(line);
+                var lines = LogBox.Text.Split(new[] { Environment.NewLine }, StringSplitOptions.None);
+                if (lines.Length > 20)
+                {
+                    string trimmed = string.Join(Environment.NewLine, lines.Skip(lines.Length - 20));
+                    LogBox.Text = trimmed;
+                    LogBox.CaretIndex = LogBox.Text.Length;
+                }
+                LogBox.ScrollToEnd();
             }
-            LogBox.ScrollToEnd();
         }
-
     }
 }

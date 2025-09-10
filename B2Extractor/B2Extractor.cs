@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using static B2IndexExtractor.MainWindow;
 
 namespace B2IndexExtractor
 {
@@ -46,6 +47,7 @@ namespace B2IndexExtractor
         public bool OnlyAssets { get; set; } = false;
         public Action<double>? Progress { get; set; }
         public Action<string>? Logger { get; set; }
+        public LogLevel LogLevel { get; set; } = LogLevel.Full;
     }
 
     internal static class B2Extractor
