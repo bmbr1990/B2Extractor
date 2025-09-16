@@ -4,6 +4,7 @@ using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using static B2IndexExtractor.MainWindow;
@@ -114,13 +115,20 @@ namespace B2IndexExtractor
 
             try
             {
+                var magic = br.ReadBytes(4);
+                if (magic.Length != 4 || magic[0] != (byte)'T' || magic[1] != (byte)'C' || magic[2] != (byte)'B' || magic[3] != (byte)'2')
+                {
+                    options.Logger?.Invoke($"⚠️ Not a TCB2(b2index) file. Exiting");
+                    return;
+                }
+
                 // ---- header from .b2index ----
                 fs.Seek(68, SeekOrigin.Begin);
-                int entryOff = br.ReadInt32();
-                int entryCountCandidate = ReadInt32Safe(br, 72);
+                long entryOff = br.ReadInt64();
+                int entryCountCandidate = br.ReadInt32(); 
                 fs.Seek(92, SeekOrigin.Begin);
-                int nameMapOff = br.ReadInt32();
-                int nameCountCandidate = ReadInt32Safe(br, 96);
+                long nameMapOff = br.ReadInt64();
+                int nameCountCandidate = br.ReadInt32();
 
                 options.Logger?.Invoke($"entryOff=0x{entryOff:X}, nameMapOff=0x{nameMapOff:X}");
 
@@ -129,7 +137,6 @@ namespace B2IndexExtractor
 
                 var containerNameByIndex = new Dictionary<int, string>();
                 {
-
                     var neededIdx = quickFiles.Select(ne => ne.FileNumber).Distinct();
 
                     foreach (int idx in neededIdx)
@@ -138,13 +145,9 @@ namespace B2IndexExtractor
                         if (row + 16 > fileSize) continue;
 
                         fs.Seek(row, SeekOrigin.Begin);
-                        int blockOff = br.ReadInt32();
-                        _ = br.ReadInt32(); // blank
+                        long blockOff = br.ReadInt64();
                         _ = br.ReadInt32(); // absOff
                         _ = br.ReadInt32(); // absSize
-
-                        if (blockOff <= 0 || blockOff >= fileSize)
-                            continue;
 
                         long save = fs.Position;
                         try
@@ -445,7 +448,7 @@ namespace B2IndexExtractor
                                 Directory.CreateDirectory(dir);
 
                             string relKey = Path.GetRelativePath(options.OutputDirectory, outPath);
-                            outPath = EnsureUniqueFast(outPath, relKey);
+                            //outPath = EnsureUniqueFast(outPath, relKey);
 
                             File.WriteAllBytes(outPath, absData);
                             options.Logger?.Invoke($"✔️ {Path.GetRelativePath(options.OutputDirectory, outPath)} ({absSize} B)");
