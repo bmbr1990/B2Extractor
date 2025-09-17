@@ -124,10 +124,10 @@ namespace B2IndexExtractor
 
                 // ---- header from .b2index ----
                 fs.Seek(68, SeekOrigin.Begin);
-                long entryOff = br.ReadInt64();
+                long entryOff = (long)(br.ReadUInt64() & 0xFFFFFFFF);
                 int entryCountCandidate = br.ReadInt32(); 
                 fs.Seek(92, SeekOrigin.Begin);
-                long nameMapOff = br.ReadInt64();
+                long nameMapOff = (long)(br.ReadUInt64() & 0xFFFFFFFF);
                 int nameCountCandidate = br.ReadInt32();
 
                 options.Logger?.Invoke($"entryOff=0x{entryOff:X}, nameMapOff=0x{nameMapOff:X}");
@@ -145,7 +145,7 @@ namespace B2IndexExtractor
                         if (row + 16 > fileSize) continue;
 
                         fs.Seek(row, SeekOrigin.Begin);
-                        long blockOff = br.ReadInt64();
+                        long blockOff = (long)(br.ReadUInt64() & 0xFFFFFFFF);
                         _ = br.ReadInt32(); // absOff
                         _ = br.ReadInt32(); // absSize
 
@@ -153,8 +153,8 @@ namespace B2IndexExtractor
                         try
                         {
                             fs.Seek(blockOff, SeekOrigin.Begin);
-                            ulong archiveSpecs = br.ReadUInt64();
-                            fs.Seek((long)archiveSpecs, SeekOrigin.Begin);
+                            long archiveSpecs = (long)(br.ReadUInt64() & 0xFFFFFFFF);
+                            fs.Seek(archiveSpecs, SeekOrigin.Begin);
                             int archiveOff = br.ReadInt32();
                             fs.Seek(archiveOff, SeekOrigin.Begin);
 
@@ -208,7 +208,6 @@ namespace B2IndexExtractor
 
                     bool isAsset = FileRouting.IsUbulk(fn)
                         || ext == ".uasset"
-                        || ext == ".uasset2"
                         || ext == ".umap";
 
                     // WEM Detection
@@ -380,7 +379,6 @@ namespace B2IndexExtractor
 
                         bool isUassetLike =
                             name.EndsWith(".uasset", StringComparison.OrdinalIgnoreCase) ||
-                            name.EndsWith(".uasset2", StringComparison.OrdinalIgnoreCase) ||
                             name.EndsWith(".umap", StringComparison.OrdinalIgnoreCase);
 
                         if (options.EnableHeaderPath && isUassetLike)
@@ -388,8 +386,7 @@ namespace B2IndexExtractor
                             TryBuildPathFromUAssetHeader(absData, out headerPath, out headerKind, assetBase);
                             if (!string.IsNullOrEmpty(headerPath))
                             {
-                                var ext = Path.GetExtension(name);
-                                destRel = NormalizeRelPath(headerPath + ext);
+                                destRel = NormalizeRelPath(headerPath + "/" + name);
                                 options.Logger?.Invoke($"📦 Path generated from Header ({headerKind ?? "Matching name"}): {destRel}");
                             }
                         }
@@ -409,7 +406,6 @@ namespace B2IndexExtractor
                         if (options.SkipWemFiles && WemUtils.IsInWwiseAudioFolder(destRel))
                         {
                             options.Logger?.Invoke($"⏭️ Skipping WWise Audio file: {destRel}");
-                            processed++;
                             continue;
                         }
 
@@ -448,7 +444,7 @@ namespace B2IndexExtractor
                                 Directory.CreateDirectory(dir);
 
                             string relKey = Path.GetRelativePath(options.OutputDirectory, outPath);
-                            //outPath = EnsureUniqueFast(outPath, relKey);
+                            //k outPath = EnsureUniqueFast(outPath, relKey);
 
                             File.WriteAllBytes(outPath, absData);
                             options.Logger?.Invoke($"✔️ {Path.GetRelativePath(options.OutputDirectory, outPath)} ({absSize} B)");
@@ -477,6 +473,7 @@ namespace B2IndexExtractor
         /// If child > 0 → treat as directory and skip.
         /// return NameEntry list, with 'Name' already parsed (C-string spod nameOff).
         /// </summary>
+#if OLD
         private static List<NameEntry> ParseNameEntriesQuickBms(
             FileStream fs, BinaryReader br,
             long namesSectionOff, long fileSize,
@@ -501,7 +498,8 @@ namespace B2IndexExtractor
                 if (!looksValid)
                 {
                     safetyBad++;
-                    if (safetyBad > MAX_BAD) break;
+                    if (safetyBad > MAX_BAD)
+                        break;
                     pos += 16;
                     continue;
                 }
@@ -531,6 +529,44 @@ namespace B2IndexExtractor
             logger?.Invoke($"Name map (quickbms-style): {list.Count} records, directories: {list.Count(x => x.IsDirectory)}.");
             return list;
         }
+#else
+        private static List<NameEntry> ParseNameEntriesQuickBms(
+            FileStream fs, BinaryReader br,
+            long namesSectionOff, long fileSize,
+            Action<string>? logger)
+        {
+            var list = new List<NameEntry>();
+            if (namesSectionOff <= 0 || namesSectionOff >= fileSize) return list;
+
+            long pos = namesSectionOff;
+            while (pos + 16 <= fileSize)
+            {
+                fs.Seek(pos, SeekOrigin.Begin);
+
+                ulong rawNameOff = br.ReadUInt64();
+                long nameOff = (long)(rawNameOff & 0xFFFFFFFF); // tylko dolne 32 bity
+                int fileNo = br.ReadInt32();    // FILE_NUMBER
+                int child = br.ReadInt32();    // CHILD (signed)
+
+                // Próba odczytu nazwy bez dodatkowych zabezpieczeń.
+                // TryReadCString i tak zwróci "" przy błędnym offsecie.
+                string name = TryReadCString(fs, (long)nameOff);
+
+                list.Add(new NameEntry
+                {
+                    FileNumber = fileNo,
+                    NameOffset = (long)nameOff,
+                    IsDirectory = (child > 0),
+                    Name = name
+                });
+
+                pos += 16;
+            }
+
+            logger?.Invoke($"Name map (quickbms-lenient): {list.Count} records, directories: {list.Count(x => x.IsDirectory)}.");
+            return list;
+        }
+#endif
 
         /// Joins decompressed data into one buffer, without O(n^2) times of copying.
         /// copies only the size of 'needLen' (typowo absOff+absSize), so you dont need to allocate too much.
@@ -661,8 +697,17 @@ namespace B2IndexExtractor
                     string cls = ClassifyFromNames(names);
                     kind = cls;
 
-                    var best = PickBestPathCandidate(candidates, assetBase, cls);
-                    if (!string.IsNullOrEmpty(best)) { fullPath = best; return true; }
+                    var best = PickBestPathCandidate(candidates, assetBase, cls); 
+                    if (!string.IsNullOrEmpty(best))
+                    {
+                        // przytnij ścieżkę do katalogu (usuń ostatni segment po '/')
+                        int slash = best.LastIndexOf('/');
+                        if (slash > 0)
+                            best = best.Substring(0, slash);
+
+                        fullPath = best;
+                        return true;
+                    }
                 }
 
                 return fullPath != null;
