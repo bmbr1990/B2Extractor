@@ -1,10 +1,8 @@
-
 using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using static B2IndexExtractor.MainWindow;
@@ -13,14 +11,9 @@ namespace B2IndexExtractor
 {
     internal static class WemUtils
     {
-       private static readonly Regex WemNameRegex =
-       new Regex(@"^WEM\d+(\.[A-Za-z0-9_]+)?$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex WemNameRegex =
+            new Regex(@"^WEM\d+(\.[A-Za-z0-9_]+)?$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-        /// <summary>
-        /// returns true if:
-        /// - WEM<number>.*  (np. WEM12345.wem, WEM9999.uasset)
-        /// - or any other file with .wem extension (example: sound.wem)
-        /// </summary>
         public static bool IsWemNumberFile(string fileName)
         {
             if (string.IsNullOrWhiteSpace(fileName))
@@ -35,18 +28,16 @@ namespace B2IndexExtractor
             return Path.GetExtension(fileName).Equals(".wem", StringComparison.OrdinalIgnoreCase);
         }
 
-        /// <summary>
-        /// Checks if a file path contains "wwiseaudio" folder.
-        /// </summary>
         public static bool IsInWwiseAudioFolder(string filePath)
         {
             if (string.IsNullOrWhiteSpace(filePath))
                 return false;
 
             string normalizedPath = filePath.Replace('\\', '/').ToLowerInvariant();
-
-            // Check if the path contains "/wwiseaudio/" or "wwisetriton/"
-            return normalizedPath.Contains("/wwiseaudio/") || normalizedPath.StartsWith("wwiseaudio/") || normalizedPath.Contains("/wwisetriton/") || normalizedPath.StartsWith("wwisetriton/");
+            return normalizedPath.Contains("/wwiseaudio/")
+                || normalizedPath.StartsWith("wwiseaudio/")
+                || normalizedPath.Contains("/wwisetriton/")
+                || normalizedPath.StartsWith("wwisetriton/");
         }
     }
 
@@ -68,931 +59,416 @@ namespace B2IndexExtractor
 
     internal static class B2Extractor
     {
-        // Oodle fallback guard
-        private static int _oodleFailCount = 0;
-        private static bool _oodleDisabled = false;
-        private static readonly HashSet<string> _existingNames = new(StringComparer.OrdinalIgnoreCase);
-        static readonly HashSet<string> _createdDirs = new(StringComparer.OrdinalIgnoreCase);
+        private const int HeaderSize = 0x80;
+        private const int GroupDependencyRecordSize = 20;
+        private const int ContainerRecordSize = 56;
+        private const int ChunkDescRecordSize = 12;
+        private const int BlockRecordSize = 40;
+        private const int FileEntryRecordSize = 16;
+        private const int PathNodeRecordSize = 16;
 
-        // Cache of opened containers - it really makes entire process faster at the cost of the memory
         private static readonly Dictionary<string, FileStream> _containerCache = new(StringComparer.OrdinalIgnoreCase);
-
-        // Unique paths
+        private static readonly HashSet<string> _createdDirs = new(StringComparer.OrdinalIgnoreCase);
         private static readonly HashSet<string> _usedRelPaths = new(StringComparer.OrdinalIgnoreCase);
 
-        // --- Helper class for QuickBMS Name search mode ---
-        private sealed class NameEntry
-        {
-            public int FileNumber;      // FILE_NUMBER from name section records
-            public long NameOffset;     // NAME_OFF
-            public bool IsDirectory;    // (CHILD > 0)
-            public string Name = "";    // read from NameOffset (C-string)
-        }
+        private static int _oodleFailCount;
+        private static bool _oodleDisabled;
+        private static bool _oodleMissingWarned;
+        private static bool _oodleEntryPointWarned;
 
         public static void ExtractAll(string indexPath, ExtractOptions options)
         {
+            if (options == null)
+                throw new ArgumentNullException(nameof(options));
+
             options.Logger?.Invoke($"Opening index: {indexPath}");
 
-            string baseDir = Path.GetDirectoryName(indexPath)!;
+            string baseDir = Path.GetDirectoryName(indexPath) ?? Directory.GetCurrentDirectory();
             var availableContainers = new HashSet<string>(
                 Directory.EnumerateFiles(baseDir, "*.b2container", SearchOption.TopDirectoryOnly)
-                         .Select(p => Path.GetFileName(p).ToLowerInvariant()),
+                         .Select(Path.GetFileName)
+                         .Where(static n => !string.IsNullOrWhiteSpace(n))
+                         .Cast<string>(),
                 StringComparer.OrdinalIgnoreCase);
 
             options.Logger?.Invoke($"🗂️ Found {availableContainers.Count} .b2container files next to index.");
 
-            // if skip existing files is on output path - make a list of them
             ExistingOutputIndex? existingIndex = null;
             if (options.SkipExistingFiles)
             {
                 existingIndex = new ExistingOutputIndex(options.OutputDirectory);
-                options.Logger?.Invoke("📝 ExistingOutputIndex ready (full paths + triplets).");
+                options.Logger?.Invoke("📝 ExistingOutputIndex ready.");
             }
 
-            using var fs = new FileStream(indexPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-            using var br = new BinaryReader(fs, Encoding.UTF8, leaveOpen: true);
-            long fileSize = fs.Length;
+            _createdDirs.Clear();
+            _usedRelPaths.Clear();
+            _oodleFailCount = 0;
+            _oodleDisabled = false;
+            _oodleMissingWarned = false;
+            _oodleEntryPointWarned = false;
 
             try
             {
-                var magic = br.ReadBytes(4);
-                if (magic.Length != 4 || magic[0] != (byte)'T' || magic[1] != (byte)'C' || magic[2] != (byte)'B' || magic[3] != (byte)'2')
-                {
-                    options.Logger?.Invoke($"⚠️ Not a TCB2(b2index) file. Exiting");
-                    return;
-                }
+                byte[] indexData = File.ReadAllBytes(indexPath);
+                B2Index index = B2Index.Parse(indexData, options.Logger);
 
-                // ---- header from .b2index ----
-                fs.Seek(68, SeekOrigin.Begin);
-                long entryOff = (long)(br.ReadUInt64() & 0xFFFFFFFF);
-                int entryCountCandidate = br.ReadInt32(); 
-                fs.Seek(92, SeekOrigin.Begin);
-                long nameMapOff = (long)(br.ReadUInt64() & 0xFFFFFFFF);
-                int nameCountCandidate = br.ReadInt32();
+                options.Logger?.Invoke(
+                    $"📑 Parsed tables: groups={index.GroupDependencies.Length}, containers={index.Containers.Length}, chunks={index.Chunks.Length}, blocks={index.Blocks.Length}, fileEntries={index.FileEntries.Length}, pathAux={index.PathAux.Length}, pathNodes={index.PathNodes.Length}.");
 
-                options.Logger?.Invoke($"entryOff=0x{entryOff:X}, nameMapOff=0x{nameMapOff:X}");
+                int totalFileNodes = index.PathNodes.Count(static n => n.IsFile);
+                int processed = 0;
+                int written = 0;
+                int skipped = 0;
+                int failed = 0;
 
-                var quickList = ParseNameEntriesQuickBms(fs, br, nameMapOff, fileSize, options.Logger);
-                var quickFiles = quickList.Where(ne => !ne.IsDirectory).ToList();
-
-                var containerNameByIndex = new Dictionary<int, string>();
-                {
-                    var neededIdx = quickFiles.Select(ne => ne.FileNumber).Distinct();
-
-                    foreach (int idx in neededIdx)
-                    {
-                        long row = entryOff + (long)idx * 16;
-                        if (row + 16 > fileSize) continue;
-
-                        fs.Seek(row, SeekOrigin.Begin);
-                        long blockOff = (long)(br.ReadUInt64() & 0xFFFFFFFF);
-                        _ = br.ReadInt32(); // absOff
-                        _ = br.ReadInt32(); // absSize
-
-                        long save = fs.Position;
-                        try
-                        {
-                            fs.Seek(blockOff, SeekOrigin.Begin);
-                            long archiveSpecs = (long)(br.ReadUInt64() & 0xFFFFFFFF);
-                            fs.Seek(archiveSpecs, SeekOrigin.Begin);
-                            int archiveOff = br.ReadInt32();
-                            fs.Seek(archiveOff, SeekOrigin.Begin);
-
-                            string archName = ReadCString(br);
-                            if (!archName.EndsWith(".b2container", StringComparison.OrdinalIgnoreCase))
-                                archName += ".b2container";
-
-                            string shortName = Path.GetFileName(archName); 
-                            if (availableContainers.Contains(shortName))
-                            {
-                               
-                                containerNameByIndex[idx] = shortName;
-                            }
-                        }
-                        catch
-                        {
-                            // ignore
-                        }
-                        finally
-                        {
-                            fs.Seek(save, SeekOrigin.Begin);
-                        }
-                    }
-                }
-                // === PREFILTER Stage ====
-                int beforeAll = quickFiles.Count;
-
-                // 1) Remove entries if we know that container doesnt exist on the base path
-                var withExistingContainer = new List<NameEntry>(quickFiles.Count);
-                foreach (var ne in quickFiles)
-                {
-                    if (containerNameByIndex.ContainsKey(ne.FileNumber))
-                        withExistingContainer.Add(ne);
-                }
-                quickFiles = withExistingContainer;
-                options.Logger?.Invoke($"🚦 Prefilter (containers present): {quickFiles.Count} / {beforeAll}");
-
-                // 2) Check all filters from options
-                int beforeOptions = quickFiles.Count;
-                var prefiltered = new List<NameEntry>(quickFiles.Count);
-
-                foreach (var ne in quickFiles)
-                {
-                    string name = ne.Name ?? string.Empty;
-                    containerNameByIndex.TryGetValue(ne.FileNumber, out var containerFileName);
-                    
-                    // --- Normalize the name---
-                    string rel = NormalizeRelPath(name);               // sef relative path
-                    string fn = Path.GetFileName(rel);                // file name
-                    string ext = Path.GetExtension(fn).ToLowerInvariant();
-
-                    bool isAsset = FileRouting.IsUbulk(fn)
-                        || ext == ".uasset"
-                        || ext == ".umap";
-
-                    // WEM Detection
-                    bool isWemExt = (ext == ".wem");
-                    bool isWemNumber = WemUtils.IsWemNumberFile(fn);   
-                    bool isWemByPath = WemUtils.IsInWwiseAudioFolder(rel);
-
-                    // OnlyAssets - include all filters 
-                    if (options.OnlyAssets)
-                    { 
-                        if (!isAsset)
-                            continue; // ⏭️ just skip it
-
-                        // If WEM related - skip
-                        if (isWemExt || isWemNumber || isWemByPath)
-                            continue; // ⏭️ WEM in OnlyAssets - skip
-                    }
-
-                    // Localized/unlocalized → skip only if (OnlyAssets && SkipWem)
-                    if (LocalizationSkipper.ShouldSkipByLocalization(options.OnlyAssets, options.SkipWemFiles,
-                                                                     containerFileName ?? "", name))
-                        continue; // ⏭️ localized/unlocalized
-
-                    // SkipWem
-                    if (options.SkipWemFiles && (isWemExt || isWemNumber || isWemByPath))
-                        continue; 
-                                 
-
-                    // SkipRes/Ace
-                    string extLower = Path.GetExtension(name).ToLowerInvariant();
-                    if (options.SkipResAndAce && (extLower == ".res" || extLower == ".ace"))
-                        continue; // ⏭️ RES/ACE
-
-                    // SkipConfig
-                    if (options.SkipConfigFiles && FileRouting.ConfigExts.Contains(extLower))
-                        continue; // ⏭️ Config (ini/json/cfg/xml/toml/yaml/yml/properties/conf) :contentReference[oaicite:1]{index=1}
-
-                    // SkipBink
-                    if (options.SkipBinkFiles && (extLower == ".bik" || extLower == ".bk2"))
-                        continue; // ⏭️ Bink
-
-                    // SkipExisting → first full index (ExistingOutputIndex), then fallback to _existingNames
-                    if (options.SkipExistingFiles)
-                    {
-                        string relNorm = NormalizeRelPath(name);
-
-                        if (existingIndex != null)
-                        {
-                            if (existingIndex.HasExact(relNorm) ||
-                                existingIndex.HasByFileName(Path.GetFileName(relNorm)) ||
-                                (Path.GetExtension(relNorm).Equals(".uasset", StringComparison.OrdinalIgnoreCase) &&
-                                 existingIndex.HasAnyOfTriplet(relNorm)))
-                                continue; 
-                        }
-                        else
-                        {
-                            if (_existingNames.Contains(Path.GetFileName(relNorm)))
-                                continue; 
-                        }
-                    }
-
-                    // add if not filtered out
-                    prefiltered.Add(ne);
-                }
-
-                quickFiles = prefiltered;
-                options.Logger?.Invoke($"🧹 Prefilter (options): {quickFiles.Count} / {beforeOptions}");
-
-                // Group by container (case-insensitive), inside sort by FileNumber
-                quickFiles = quickFiles
-                    .GroupBy(ne => containerNameByIndex.TryGetValue(ne.FileNumber, out var cn) ? cn : "\uFFFF",
-                             StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase)
-                    .SelectMany(g => g.OrderBy(ne => ne.FileNumber))
-                    .ToList();
-
-                _usedRelPaths.Clear();
-                int processed = -1;
-                int total = Math.Max(1, quickFiles.Count);
-
-                foreach (var ne in quickFiles)
+                foreach (var nodeFile in EnumeratePathFiles(index))
                 {
                     processed++;
-                    int index = ne.FileNumber;
+                    options.Progress?.Invoke(100.0 * processed / Math.Max(1, totalFileNodes));
 
-                    // ---- Name & path ----
-                    string name = ne.Name;
-                    if (string.IsNullOrWhiteSpace(name))
-                        name = $"file_{index:00000000}.bin";
-
-                    long fileOff = entryOff + (long)index * 16;
-                    options.Progress?.Invoke(100.0 * processed / total);
-
-                    if (fileOff < 0 || fileOff + 16 > fileSize)
+                    string relPath = NormalizeRelPath(nodeFile.VirtualPath);
+                    if (string.IsNullOrWhiteSpace(relPath))
                     {
-                        options.Logger?.Invoke($"⏭️ Skipping entry #{index} (out of table range, off=0x{fileOff:X})");
+                        skipped++;
                         continue;
                     }
 
-                    fs.Seek(fileOff, SeekOrigin.Begin);
-                    int blockOff = br.ReadInt32();
-                    int blank = br.ReadInt32();
-                    int absOff = br.ReadInt32();
-                    int absSize = br.ReadInt32();
-
-                    if (blockOff <= 0 || blockOff >= fileSize)
+                    if (!TryResolveFile(index, nodeFile.FileEntryIndex, out B2FileEntryRecord fileEntry, out B2BlockRecord block, out B2ContainerRecord container, out string resolveError))
                     {
-                        options.Logger?.Invoke($"⏭️ Skipping entry #{index} (blockOff=0x{blockOff:X})");
+                        failed++;
+                        options.Logger?.Invoke($"⚠️ {relPath}: {resolveError}");
                         continue;
                     }
+
+                    string containerFileName = ResolveContainerFileName(container);
+                    if (!availableContainers.Contains(containerFileName))
+                    {
+                        skipped++;
+                        //options.Logger?.Invoke($"⏭️ Missing container {containerFileName}: {relPath}");
+                        continue;
+                    }
+
+                    if (ShouldSkip(relPath, containerFileName, options, existingIndex))
+                    {
+                        skipped++;
+                        continue;
+                    }
+
+                    string containerPath = Path.Combine(baseDir, containerFileName);
+                    string outputPath = SafeCombineOutput(options.OutputDirectory, relPath);
+                    outputPath = EnsureUniquePath(outputPath);
 
                     try
                     {
-                        FileStream containerStream;
-                        string containerPath = ResolveContainerPath(fs, br, indexPath, blockOff);
-                        try { containerStream = GetContainer(containerPath, options); }
-                        catch (Exception ex)
-                        {
-                            options.Logger?.Invoke($"❓ Missing/locked container: {containerPath} (#{index}) — {ex.Message}");
-                            continue;
-                        }
-                        // read base block metadata
-                        fs.Seek(blockOff + 16, SeekOrigin.Begin);
-                        ulong offset = br.ReadUInt64();
-                        int bid = br.ReadInt32();
-                        ulong sizeOff = br.ReadUInt64();
-                        int extraFileCountMinus1 = br.ReadInt32();
-                        int extraCount = Math.Max(0, extraFileCountMinus1);
+                        FileStream containerStream = GetContainer(containerPath, options);
+                        byte[] fileBytes = ExtractFileData(containerStream, index, block, fileEntry.OffsetInBlock, fileEntry.Size, options);
 
-                        fs.Seek((long)sizeOff, SeekOrigin.Begin);
-                        ulong baseUncSize = br.ReadUInt64();
-                        int baseCSize = br.ReadInt32();
+                        string? outDir = Path.GetDirectoryName(outputPath);
+                        if (!string.IsNullOrEmpty(outDir) && _createdDirs.Add(outDir))
+                            Directory.CreateDirectory(outDir);
 
-                        var chunks = new List<(ulong off, int csize, int unc)>
-                        {
-                            (offset, baseCSize, (int)baseUncSize)
-                        };
-                        int totalUnc = (int)baseUncSize;
+                        File.WriteAllBytes(outputPath, fileBytes);
+                        written++;
 
-                        for (int i = 0; i < extraCount; i++)
-                        {
-                            int eUncSize = br.ReadInt32();
-                            int eStart = br.ReadInt32();
-                            int eEnd = br.ReadInt32();
-                            int eCSize = eEnd - eStart;
-                            ulong eOffset = offset + (ulong)eStart;
-                            chunks.Add((eOffset, eCSize, eUncSize));
-                            if (eUncSize > 0 && eUncSize < int.MaxValue - totalUnc) totalUnc += eUncSize;
-                        }
-
-                        long needLen = Math.Max(0, (long)absOff + Math.Max(0, absSize));
-                        if (totalUnc > 0 && needLen > totalUnc) needLen = totalUnc;
-                        var full = AssembleWindow(containerStream, chunks, needLen, options);
-
-                        if (absOff < 0 || absSize < 0 || absOff + absSize > full.Length)
-                        {
-                            options.Logger?.Invoke($"⏭️ Entry #{index}: Bad data range (absOff={absOff}, absSize={absSize}, full={full.Length})");
-                            continue;
-                        }
-
-                        byte[] absData = new byte[Math.Max(0, absSize)];
-                        if (absSize > 0) Buffer.BlockCopy(full, absOff, absData, 0, absSize);
-
-                        string assetBase = Path.GetFileNameWithoutExtension(name);
-                        string destRel = NormalizeRelPath(name);
-
-                        string? headerPath = null;
-                        string? headerKind = null;
-
-                        bool isUassetLike =
-                            name.EndsWith(".uasset", StringComparison.OrdinalIgnoreCase) ||
-                            name.EndsWith(".umap", StringComparison.OrdinalIgnoreCase);
-
-                        if (options.EnableHeaderPath && isUassetLike)
-                        {
-                            TryBuildPathFromUAssetHeader(absData, out headerPath, out headerKind, assetBase);
-                            if (!string.IsNullOrEmpty(headerPath))
-                            {
-                                destRel = NormalizeRelPath(headerPath + "/" + name);
-                                options.Logger?.Invoke($"📦 Path generated from Header ({headerKind ?? "Matching name"}): {destRel}");
-                            }
-                        }
-
-                        if (headerPath == null && options.EnableContentPath && isUassetLike)
-                        {
-                            var guessed = TryGuessPathFromContent(absData, assetBase);
-                            if (!string.IsNullOrEmpty(guessed))
-                            {
-                                var ext = Path.GetExtension(name);
-                                destRel = NormalizeRelPath(guessed + ext);
-                                options.Logger?.Invoke($"🧭 Path generated from analyzing content: {destRel}");
-                            }
-                        }
-
-                        // Check for WWise audio folder AFTER the path ishas been determined
-                        if (options.SkipWemFiles && WemUtils.IsInWwiseAudioFolder(destRel))
-                        {
-                            options.Logger?.Invoke($"⏭️ Skipping WWise Audio file: {destRel}");
-                            continue;
-                        }
-
-                        bool looksDir = LooksLikeDirectoryName(destRel);
-
-                        if (looksDir || absSize == 0)
-                        {
-                            var dirPath = Path.Combine(options.OutputDirectory, destRel)
-                                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                            Directory.CreateDirectory(dirPath);
-                            options.Logger?.Invoke($"📁 {destRel.TrimEnd('/', '\\')} (Directory)");
-                        }
-                        else
-                        {
-                            // routing
-                            string fileNameOnly = Path.GetFileName(destRel);
-                            string? suggestedSubdir = Path.GetDirectoryName(destRel)?.Replace('\\', '/');
-
-                            bool isMaterialUasset = LooksLikeMaterialUasset(fileNameOnly, destRel, headerKind);
-
-                            string? outPath = FileRouting.ResolveOutputPath(
-                                options.OutputDirectory,
-                                suggestedSubdir,
-                                fileNameOnly,
-                                isMaterialUasset
-                            );
-
-                            if (outPath == null)
-                            {
-                                options.Logger?.Invoke($"⏭️ Skipping (missing extension - probably a directory): {fileNameOnly}");
-                                continue;
-                            }
-
-                            string dir = Path.GetDirectoryName(outPath)!;
-                            if (_createdDirs.Add(dir))
-                                Directory.CreateDirectory(dir);
-
-                            string relKey = Path.GetRelativePath(options.OutputDirectory, outPath);
-                            //k outPath = EnsureUniqueFast(outPath, relKey);
-
-                            File.WriteAllBytes(outPath, absData);
-                            options.Logger?.Invoke($"✔️ {Path.GetRelativePath(options.OutputDirectory, outPath)} ({absSize} B)");
-                        }
+                        if (written % 1000 == 0)
+                            options.Logger?.Invoke($"✔️ Extracted {written} files. Last: {Path.GetRelativePath(options.OutputDirectory, outputPath)}");
                     }
                     catch (Exception ex)
                     {
-                        options.Logger?.Invoke($"⚠️ Bad Entry #{index}: {ex.Message}");
+                        failed++;
+                        options.Logger?.Invoke($"⚠️ Failed: {relPath}: {ex.Message}");
                     }
-
-                    options.Progress?.Invoke(100.0 * processed / total);
                 }
 
-                // After QuickBMS — reconcile ubulks and exit
-                try { FileRouting.ReconcileOrphanUbulks(options.OutputDirectory, options.Logger); } catch { }
+                options.Progress?.Invoke(100.0);
+                options.Logger?.Invoke($"✅ Done. Written={written}, skipped={skipped}, failed={failed}, fileNodes={totalFileNodes}.");
             }
             finally
             {
-                // Zawsze zamknij wszystkie kontenery
                 CloseAllContainers();
             }
         }
 
-        /// <summary>
-        /// parses name section like quickbms: record 16-byte (u64 nameOff, i32 fileNo, i32 child).
-        /// If child > 0 → treat as directory and skip.
-        /// return NameEntry list, with 'Name' already parsed (C-string spod nameOff).
-        /// </summary>
-#if OLD
-        private static List<NameEntry> ParseNameEntriesQuickBms(
-            FileStream fs, BinaryReader br,
-            long namesSectionOff, long fileSize,
-            Action<string>? logger)
+        private static bool TryResolveFile(
+            B2Index index,
+            int fileEntryIndex,
+            out B2FileEntryRecord fileEntry,
+            out B2BlockRecord block,
+            out B2ContainerRecord container,
+            out string error)
         {
-            var list = new List<NameEntry>();
-            if (namesSectionOff <= 0 || namesSectionOff >= fileSize) return list;
+            fileEntry = default;
+            block = default;
+            container = default;
+            error = string.Empty;
 
-            long pos = namesSectionOff;
-            int safetyBad = 0;
-            const int MAX_BAD = 4096;
-
-            while (pos + 16 <= fileSize)
+            if ((uint)fileEntryIndex >= (uint)index.FileEntries.Length)
             {
-                fs.Seek(pos, SeekOrigin.Begin);
+                error = $"FileEntry index out of range: {fileEntryIndex}";
+                return false;
+            }
 
-                ulong nameOff = br.ReadUInt64();       // NAME_OFF
-                int fileNo = br.ReadInt32();           // FILE_NUMBER
-                int child = br.ReadInt32();            // CHILD (signed)
+            fileEntry = index.FileEntries[fileEntryIndex];
+            if ((uint)fileEntry.BlockIndex >= (uint)index.Blocks.Length)
+            {
+                error = $"Block index out of range: {fileEntry.BlockIndex}";
+                return false;
+            }
 
-                bool looksValid = (nameOff > 0 && (long)nameOff < fileSize && fileNo >= 0);
-                if (!looksValid)
+            block = index.Blocks[fileEntry.BlockIndex];
+            if ((uint)block.ContainerIndex >= (uint)index.Containers.Length)
+            {
+                error = $"Container index out of range: {block.ContainerIndex}";
+                return false;
+            }
+
+            if ((uint)block.FirstChunkIndex >= (uint)index.Chunks.Length && block.ChunkCount > 0)
+            {
+                error = $"Chunk index out of range: first={block.FirstChunkIndex}, count={block.ChunkCount}";
+                return false;
+            }
+
+            if (block.FirstChunkIndex + block.ChunkCount > index.Chunks.Length)
+            {
+                error = $"Chunk range out of range: first={block.FirstChunkIndex}, count={block.ChunkCount}";
+                return false;
+            }
+
+            container = index.Containers[block.ContainerIndex];
+            return true;
+        }
+
+        private static IEnumerable<PathFile> EnumeratePathFiles(B2Index index)
+        {
+            int rootIndex = index.RootPathNodeIndex;
+            if ((uint)rootIndex >= (uint)index.PathNodes.Length)
+                rootIndex = 0;
+
+            var stack = new Stack<(int NodeIndex, string ParentPath)>();
+            stack.Push((rootIndex, string.Empty));
+
+            while (stack.Count > 0)
+            {
+                var item = stack.Pop();
+                if ((uint)item.NodeIndex >= (uint)index.PathNodes.Length)
+                    continue;
+
+                B2PathNodeRecord node = index.PathNodes[item.NodeIndex];
+                string name = index.GetString(node.NameOffset);
+                string fullPath = CombineVirtualPath(item.ParentPath, name);
+
+                if (node.IsFile)
                 {
-                    safetyBad++;
-                    if (safetyBad > MAX_BAD)
-                        break;
-                    pos += 16;
+                    yield return new PathFile(fullPath, unchecked((int)node.FirstChildOrFileEntryIndex));
                     continue;
                 }
 
-                string name = TryReadCString(fs, (long)nameOff);
-                if (string.IsNullOrEmpty(name))
-                {
-                    safetyBad++;
-                    if (safetyBad > MAX_BAD) break;
-                    pos += 16;
+                if (node.ChildCount < 0)
                     continue;
-                }
 
-                safetyBad = 0; // looks like a record
+                int firstChild = unchecked((int)node.FirstChildOrFileEntryIndex);
+                int childCount = node.ChildCount;
+                if (firstChild < 0 || childCount < 0 || firstChild + childCount > index.PathNodes.Length)
+                    continue;
 
-                list.Add(new NameEntry
-                {
-                    FileNumber = fileNo,
-                    NameOffset = (long)nameOff,
-                    IsDirectory = (child > 0),
-                    Name = name
-                });
-
-                pos += 16;
+                for (int i = childCount - 1; i >= 0; i--)
+                    stack.Push((firstChild + i, fullPath));
             }
-
-            logger?.Invoke($"Name map (quickbms-style): {list.Count} records, directories: {list.Count(x => x.IsDirectory)}.");
-            return list;
         }
-#else
-        private static List<NameEntry> ParseNameEntriesQuickBms(
-            FileStream fs, BinaryReader br,
-            long namesSectionOff, long fileSize,
-            Action<string>? logger)
-        {
-            var list = new List<NameEntry>();
-            if (namesSectionOff <= 0 || namesSectionOff >= fileSize) return list;
 
-            long pos = namesSectionOff;
-            while (pos + 16 <= fileSize)
+        private static string CombineVirtualPath(string parent, string name)
+        {
+            if (string.IsNullOrEmpty(parent))
+                return name ?? string.Empty;
+            if (string.IsNullOrEmpty(name))
+                return parent;
+            return parent.TrimEnd('/', '\\') + "/" + name.TrimStart('/', '\\');
+        }
+
+        private static bool ShouldSkip(string relPath, string containerFileName, ExtractOptions options, ExistingOutputIndex? existingIndex)
+        {
+            string normalized = relPath.Replace('\\', '/');
+            string fileName = Path.GetFileName(normalized);
+            string ext = Path.GetExtension(fileName).ToLowerInvariant();
+
+            bool isUbulk = FileRouting.IsUbulk(fileName) || FileRouting.IsUbulk(ext);
+            bool isAsset = isUbulk
+                || ext == ".uasset"
+                || ext == ".uasset2"
+                || ext == ".umap"
+                || ext == ".uexp";
+
+            bool isWemExt = ext == ".wem";
+            bool isWemNumber = WemUtils.IsWemNumberFile(fileName);
+            bool isWemByPath = WemUtils.IsInWwiseAudioFolder(normalized);
+
+            if (options.OnlyAssets)
             {
-                fs.Seek(pos, SeekOrigin.Begin);
+                if (!isAsset)
+                    return true;
 
-                ulong rawNameOff = br.ReadUInt64();
-                long nameOff = (long)(rawNameOff & 0xFFFFFFFF); // tylko dolne 32 bity
-                int fileNo = br.ReadInt32();    // FILE_NUMBER
-                int child = br.ReadInt32();    // CHILD (signed)
-
-                // Próba odczytu nazwy bez dodatkowych zabezpieczeń.
-                // TryReadCString i tak zwróci "" przy błędnym offsecie.
-                string name = TryReadCString(fs, (long)nameOff);
-
-                list.Add(new NameEntry
-                {
-                    FileNumber = fileNo,
-                    NameOffset = (long)nameOff,
-                    IsDirectory = (child > 0),
-                    Name = name
-                });
-
-                pos += 16;
+                if (isWemExt || isWemNumber || isWemByPath)
+                    return true;
             }
 
-            logger?.Invoke($"Name map (quickbms-lenient): {list.Count} records, directories: {list.Count(x => x.IsDirectory)}.");
-            return list;
-        }
-#endif
+            if (LocalizationSkipper.ShouldSkipByLocalization(options.OnlyAssets, options.SkipWemFiles, containerFileName, normalized))
+                return true;
 
-        /// Joins decompressed data into one buffer, without O(n^2) times of copying.
-        /// copies only the size of 'needLen' (typowo absOff+absSize), so you dont need to allocate too much.
-        private static byte[] AssembleWindow(FileStream cfs, List<(ulong off, int csize, int unc)> chunks, long needLen, ExtractOptions options)
-        {
-            if (needLen < 0) needLen = 0;
-            var outBuf = new byte[needLen];
-            long cursor = 0;
-            foreach (var ch in chunks)
+            if (options.SkipWemFiles && (isWemExt || isWemNumber || isWemByPath))
+                return true;
+
+            if (options.SkipResAndAce && (ext == ".res" || ext == ".ace"))
+                return true;
+
+            if (options.SkipConfigFiles && FileRouting.ConfigExts.Contains(ext))
+                return true;
+
+            if (options.SkipBinkFiles && (ext == ".bik" || ext == ".bk2"))
+                return true;
+
+            if (options.SkipExistingFiles && existingIndex != null)
             {
-                var part = ExtractFromContainer(cfs, ch.off, (ulong)ch.csize, (ulong)ch.unc, options);
-                int copyLen = part.Length;
-                if (cursor >= needLen) break;
-                if (cursor + copyLen > needLen) copyLen = (int)(needLen - cursor);
-                if (copyLen > 0)
-                {
-                    Buffer.BlockCopy(part, 0, outBuf, (int)cursor, copyLen);
-                    cursor += copyLen;
-                }
-                else
-                {
-                    cursor += part.Length;
-                }
+                if (existingIndex.HasExact(normalized))
+                    return true;
+
+                if ((ext == ".uasset" || ext == ".uasset2") && existingIndex.HasAnyOfTriplet(normalized))
+                    return true;
             }
-            return outBuf;
-        }
-
-        // ---- Heuristics: detecting material (.uasset/.uasset2) ----
-        private static bool LooksLikeMaterialUasset(string fileName, string destRel, string? headerKind)
-        {
-            bool isUasset = fileName.EndsWith(".uasset", StringComparison.OrdinalIgnoreCase) || fileName.EndsWith(".uasset2", StringComparison.OrdinalIgnoreCase);
-            if (!isUasset) return false;
-
-            if (string.Equals(headerKind, "material", StringComparison.OrdinalIgnoreCase))
-                return true;
-
-            string rel = (destRel ?? "").Replace('\\', '/').ToLowerInvariant();
-            if (rel.Contains("/material") || rel.Contains("/materials"))
-                return true;
-
-            string stem = Path.GetFileNameWithoutExtension(fileName);
-            string up = (stem ?? "").ToUpperInvariant();
-            if (up.StartsWith("M_") || up.StartsWith("MI_") || up.StartsWith("MIC_") || up.StartsWith("MF_"))
-                return true;
 
             return false;
         }
 
-        // ---- HEADER path building (generic separators) ----
-        private static bool TryBuildPathFromUAssetHeader(byte[] data, out string? fullPath, out string? kind, string assetBase)
+        private static byte[] ExtractFileData(FileStream containerStream, B2Index index, B2BlockRecord block, uint offsetInBlock, uint fileSize, ExtractOptions options)
         {
-            fullPath = null; kind = null;
+            if (fileSize == 0)
+                return Array.Empty<byte>();
+
+            if (fileSize > int.MaxValue)
+                throw new InvalidDataException($"File too large for byte[] extraction: {fileSize} bytes.");
+
+            long wantedStart = offsetInBlock;
+            long wantedEnd = wantedStart + fileSize;
+            byte[] result = new byte[(int)fileSize];
+
+            long logicalCursor = 0;
+            int written = 0;
+
+            for (int i = 0; i < block.ChunkCount; i++)
+            {
+                B2ChunkDescRecord chunk = index.Chunks[block.FirstChunkIndex + i];
+                long chunkStart = logicalCursor;
+                long chunkEnd = chunkStart + chunk.UncompressedSize;
+
+                if (chunkEnd <= wantedStart)
+                {
+                    logicalCursor = chunkEnd;
+                    continue;
+                }
+
+                if (chunkStart >= wantedEnd)
+                    break;
+
+                long physicalStart = checked((long)block.PhysicalOffset + chunk.CompressedStartOffsetInBlock);
+                long compressedSize = checked((long)chunk.CompressedEndOffsetInBlock - chunk.CompressedStartOffsetInBlock);
+                if (compressedSize < 0)
+                    throw new InvalidDataException($"Negative compressed chunk size. Block={block.PhysicalOffset:X}, chunk={i}.");
+
+                byte[] chunkData = ExtractChunk(containerStream, physicalStart, compressedSize, chunk.UncompressedSize, options);
+                if ((uint)chunkData.Length < chunk.UncompressedSize)
+                    throw new InvalidDataException($"Decompressed chunk is too small: got={chunkData.Length}, expected={chunk.UncompressedSize}.");
+
+                long copyStart = Math.Max(wantedStart, chunkStart);
+                long copyEnd = Math.Min(wantedEnd, chunkEnd);
+                int srcOffset = checked((int)(copyStart - chunkStart));
+                int dstOffset = checked((int)(copyStart - wantedStart));
+                int copyLen = checked((int)(copyEnd - copyStart));
+
+                Buffer.BlockCopy(chunkData, srcOffset, result, dstOffset, copyLen);
+                written += copyLen;
+
+                logicalCursor = chunkEnd;
+            }
+
+            if ((uint)written != fileSize)
+                throw new EndOfStreamException($"Could not assemble full file from block. Written={written}, expected={fileSize}, offsetInBlock={offsetInBlock}.");
+
+            return result;
+        }
+
+        private static byte[] ExtractChunk(FileStream cfs, long offset, long compSize, long uncSize, ExtractOptions options)
+        {
+            if (offset < 0 || offset > cfs.Length)
+                throw new InvalidDataException($"Chunk offset outside container: 0x{offset:X}.");
+
+            if (compSize < 0 || compSize > int.MaxValue)
+                throw new InvalidDataException($"Invalid compressed chunk size: {compSize}.");
+
+            if (uncSize < 0 || uncSize > int.MaxValue)
+                throw new InvalidDataException($"Invalid uncompressed chunk size: {uncSize}.");
+
+            if (offset + compSize > cfs.Length)
+                throw new EndOfStreamException($"Chunk exceeds container length. Offset=0x{offset:X}, compSize={compSize}, containerSize={cfs.Length}.");
+
+            byte[] comp = ArrayPool<byte>.Shared.Rent((int)compSize);
             try
             {
-                var r = new Buf(data);
-                int fileTag = r.ReadInt();
-                int fileVersion = r.ReadInt();
-                bool isUE4 = fileVersion < 0;
-                int ue4Legacy = fileVersion;
-                if (isUE4 && ue4Legacy != -4) { fileVersion = r.ReadInt(); }
-                int fv = fileVersion;
-                short ver = (short)(fv & 0xFFFF);
-                short lic = (short)((fv >> 16) & 0xFFFF);
-                int ue4Ver = r.ReadInt();
-                int ue4Lic = r.ReadInt();
-
-                // FIX: handle custom versions for Gears 5 and Tactics
-                if (ue4Ver == 502 && ue4Lic == 67)
-                {
-                    int customCount = r.ReadInt();
-                    for (int i = 0; i < customCount; i++)
-                    {
-                        _ = r.ReadInt(); // guid A
-                        _ = r.ReadInt(); // guid B
-                        _ = r.ReadInt(); // guid C
-                        _ = r.ReadInt(); // guid D
-                        _ = r.ReadInt(); // version
-                    }
-                }
-
-                int totalHeaderSize = r.ReadInt();
-
-                string folderName = r.ReadFString();
-                if (!string.IsNullOrEmpty(folderName))
-                {
-                    var folder = folderName.TrimEnd('\0').Trim().Replace('\\', '/');
-                    if (folder.Length > 0 && folder != "/" && folder != "\\")
-                    {
-                        fullPath = Path.Combine(folder, assetBase);
-                    }
-                }
-
-                uint pkgFlags = r.ReadUInt();
-
-                // Name table (count + offset, order may vary)
-                int a = r.ReadInt();
-                int b = r.ReadInt();
-                int nameCount, nameOff;
-                if (a > 0 && b > 0)
-                {
-                    nameCount = a;
-                    nameOff = b;
-                }
-                else
-                {
-                    nameCount = b; nameOff = a;
-                }
-
-                if (ue4Ver > 459 && ue4Ver != 499) { _ = r.ReadFString(); } // LocalizationID
-                if (ue4Ver > 459) { r.Skip(8); } // GatherableTextDataCount/Offset
-
-                if (ue4Ver == 502 && ue4Lic == 67) { r.Skip(4); } // special skip
-
-                int exportCount = r.ReadInt();
-                int exportOff = r.ReadInt();
-                int importCount = r.ReadInt();
-                int importOff = r.ReadInt();
-
-                // Scan NameTable for ANY path-like strings (not limited to Game/Engine)
-                if (nameOff > 0 && nameOff < data.Length)
-                {
-                    var names = ScanNameTableStrings(data, nameOff, nameCount);
-                    var candidates = names
-                        .Select(NormalizePathLike)
-                        .Where(s => !string.IsNullOrEmpty(s))
-                        .Cast<string>()
-                        .ToList();
-                    string cls = ClassifyFromNames(names);
-                    kind = cls;
-
-                    var best = PickBestPathCandidate(candidates, assetBase, cls); 
-                    if (!string.IsNullOrEmpty(best))
-                    {
-                        // przytnij ścieżkę do katalogu (usuń ostatni segment po '/')
-                        int slash = best.LastIndexOf('/');
-                        if (slash > 0)
-                            best = best.Substring(0, slash);
-
-                        fullPath = best;
-                        return true;
-                    }
-                }
-
-                return fullPath != null;
-            }
-            catch { return false; }
-        }
-
-        private static string ClassifyFromNames(IEnumerable<string> names)
-        {
-            string s = string.Join(";", names).ToLowerInvariant();
-            if (s.Contains("materialexpression") || s.Contains("texture2d") || s.Contains("shader") || s.Contains("material"))
-                return "material";
-            if (s.Contains("agggeom") || s.Contains("staticmesh") || s.Contains("skeletalmesh"))
-                return "mesh";
-            return "unknown";
-        }
-
-        private static IEnumerable<string> ScanNameTableStrings(byte[] data, int nameOff, int nameCount)
-        {
-            var list = new List<string>();
-            int pos = nameOff;
-            for (int i = 0; i < Math.Max(0, nameCount) && pos >= 0 && pos < data.Length - 4; i++)
-            {
-                int len = BitConverter.ToInt32(data, pos); pos += 4;
-                if (len == 0) { list.Add(""); continue; }
-                bool isUnicode = len < 0; int count = Math.Abs(len);
-                int bytes = isUnicode ? count * 2 : count;
-                if (pos + bytes > data.Length) break;
-                string s = isUnicode ? Encoding.Unicode.GetString(data, pos, bytes) : Encoding.UTF8.GetString(data, pos, bytes);
-                pos += bytes;
-                list.Add(s.TrimEnd('\0'));
-                if (pos + 4 <= data.Length) pos += 4; // extra field
-            }
-            return list;
-        }
-
-        private static string? NormalizePathLike(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return null;
-            s = s.Replace('\\', '/');
-            if (!s.Contains('/')) return null;
-            int dot = s.LastIndexOf('.');
-            if (dot > 0)
-            {
-                var last = s.Substring(s.LastIndexOf('/') + 1);
-                var afterDot = s.Substring(dot + 1);
-                if (string.Equals(last, afterDot, StringComparison.OrdinalIgnoreCase))
-                    s = s.Substring(0, dot);
-            }
-            while (s.StartsWith("//")) s = s.Substring(1);
-            return s.Trim();
-        }
-
-        private static string PickBestPathCandidate(IEnumerable<string> candidates, string assetBase, string cls)
-        {
-            int Score(string p)
-            {
-                int score = 0;
-                var last = p.Contains('/') ? p[(p.LastIndexOf('/') + 1)..] : p;
-                if (string.Equals(last, assetBase, StringComparison.OrdinalIgnoreCase)) score += 5;
-                if (p.StartsWith("/")) score += 3;
-                if (p.Contains("/Game/") || p.Contains("/Engine/")) score += 2;
-                if (cls == "material" && p.ToLowerInvariant().Contains("material")) score += 2;
-                if (cls == "mesh" && (p.ToLowerInvariant().Contains("mesh") || p.ToLowerInvariant().Contains("agggeom"))) score += 2;
-                score += Math.Min(10, p.Count(c => c == '/'));
-                score += Math.Min(10, p.Length);
-                return score;
-            }
-            string best = candidates.OrderByDescending(Score).FirstOrDefault() ?? "";
-            return best;
-        }
-
-        // ---- Content bytes heuristic: ANY path-like token ----
-        private static string? TryGuessPathFromContent(byte[] data, string assetBaseName)
-        {
-            var paths = new List<string>();
-            for (int i = 0; i < data.Length; i++)
-            {
-                if (data[i] != (byte)'/' && data[i] != (byte)'\\') continue;
-                int start = i;
-                int j = i + 1;
-                int segments = 0;
-                while (j < data.Length)
-                {
-                    byte b = data[j];
-                    if (b == 0 || b < 0x20 || b == (byte)'\"' || b == (byte)'\'' || b == (byte)' ' || b == (byte)'\t' || b == (byte)'\r' || b == (byte)'\n') break;
-                    if (b == (byte)'/' || b == (byte)'\\') segments++;
-                    j++;
-                    if (j - i > 512) break;
-                }
-                if (segments >= 1 && j - start > 2)
-                {
-                    string s = Encoding.ASCII.GetString(data, start, j - start).Replace('\\', '/');
-                    var norm = NormalizePathLike(s);
-                    if (!string.IsNullOrEmpty(norm)) paths.Add(norm);
-                }
-                i = j;
-            }
-            if (paths.Count == 0) return null;
-            string best = paths.OrderByDescending(p => (p.EndsWith("/" + assetBaseName, StringComparison.OrdinalIgnoreCase) ? 10 : 0) + p.Count(c => c == '/')).First();
-            return best;
-        }
-
-        // Heuristics: does buffer looks like decompressed
-        private static bool LikelyDecompressed(byte[] raw)
-        {
-            if (raw.Length == 0) return false;
-            int nonZero = 0;
-            int[] hist = new int[256];
-            int step = Math.Max(1, raw.Length / 1024);
-            for (int i = 0; i < raw.Length; i += step)
-            {
-                byte b = raw[i];
-                hist[b]++;
-                if (b != 0) nonZero++;
-            }
-            int unique = 0;
-            for (int i = 0; i < 256; i++) if (hist[i] > 0) unique++;
-            return nonZero > 0 && unique > 8;
-        }
-
-        // ---- Utilities ----
-        private sealed class Buf
-        {
-            private readonly byte[] _d; private int _p;
-            public Buf(byte[] d) { _d = d; _p = 0; }
-            public void Skip(int n) { _p = Math.Min(_d.Length, _p + n); }
-            public int ReadInt() { if (_p + 4 > _d.Length) throw new EndOfStreamException(); int v = BitConverter.ToInt32(_d, _p); _p += 4; return v; }
-            public uint ReadUInt() { if (_p + 4 > _d.Length) throw new EndOfStreamException(); uint v = BitConverter.ToUInt32(_d, _p); _p += 4; return v; }
-            public string ReadFString()
-            {
-                if (_p + 4 > _d.Length) return "";
-                int len = BitConverter.ToInt32(_d, _p); _p += 4;
-                if (len == 0) return "";
-                bool isUnicode = len < 0; int count = Math.Abs(len);
-                int bytes = isUnicode ? count * 2 : count;
-                if (_p + bytes > _d.Length) { _p = _d.Length; return ""; }
-                string s = isUnicode ? Encoding.Unicode.GetString(_d, _p, bytes) : Encoding.UTF8.GetString(_d, _p, bytes);
-                _p += bytes;
-                return s.TrimEnd('\0');
-            }
-        }
-
-        private static Dictionary<int, long> ParseNameMap(FileStream fs, BinaryReader br, int nameMapOff, int nameCountCandidate, long fileSize, ExtractOptions options)
-        {
-            var map = new Dictionary<int, long>();
-            if (nameMapOff <= 0 || nameMapOff >= fileSize) return map;
-
-            bool usedCount = false;
-            if (nameCountCandidate > 0 && nameMapOff + (long)nameCountCandidate * 12 <= fileSize)
-            {
-                usedCount = true;
-                fs.Seek(nameMapOff, SeekOrigin.Begin);
-                for (int i = 0; i < nameCountCandidate; i++)
-                {
-                    long nameOff = (long)br.ReadUInt64();
-                    int idx = br.ReadInt32();
-                    if (nameOff > 0 && nameOff < fileSize && idx >= 0 && !map.ContainsKey(idx))
-                    {
-                        string s = TryReadCString(fs, nameOff);
-                        if (!string.IsNullOrEmpty(s)) map[idx] = nameOff;
-                    }
-                }
-                if (map.Count == 0)
-                {
-                    options.Logger?.Invoke("Bad use of nameCountCandidate — switching to Heuristics.");
-                    usedCount = false;
-                }
-            }
-
-            if (!usedCount)
-            {
-                fs.Seek(nameMapOff, SeekOrigin.Begin);
-                long pos = nameMapOff;
-                int safety = 0;
-                while (pos + 12 <= fileSize && safety < 2_000_000)
-                {
-                    fs.Seek(pos, SeekOrigin.Begin);
-                    long nameOff = (long)br.ReadUInt64();
-                    int idx = br.ReadInt32();
-                    if (nameOff <= 0 || nameOff >= fileSize || idx < 0)
-                    {
-                        safety++;
-                        pos += 12;
-                        continue;
-                    }
-                    string s = TryReadCString(fs, nameOff);
-                    if (!string.IsNullOrEmpty(s) && !map.ContainsKey(idx))
-                    {
-                        map[idx] = nameOff;
-                        safety = 0;
-                    }
-                    else safety++;
-                    pos += 12;
-                    if (map.Count > 0 && safety > 4096) break;
-                }
-            }
-            options.Logger?.Invoke($"Name Map: {map.Count} positions.");
-            return map;
-        }
-
-        private static string ResolveContainerPath(FileStream fs, BinaryReader br, string indexPath, int blockOff)
-        {
-            fs.Seek(blockOff, SeekOrigin.Begin);
-            ulong archiveSpecs = br.ReadUInt64();
-            fs.Seek((long)archiveSpecs, SeekOrigin.Begin);
-            int archiveOff = br.ReadInt32();
-            fs.Seek(archiveOff, SeekOrigin.Begin);
-            string archName = ReadCString(br);
-            if (!archName.EndsWith(".b2container", StringComparison.OrdinalIgnoreCase))
-                archName += ".b2container";
-            string baseDir = Path.GetDirectoryName(indexPath)!;
-            return Path.Combine(baseDir, archName);
-        }
-
-        // Nowa wersja – przyjmuje gotowy stream z cache
-        private static byte[] ExtractFromContainer(FileStream cfs, ulong offset, ulong compSize, ulong uncSize, ExtractOptions options)
-        {
-            if ((long)offset < 0 || (long)offset >= cfs.Length) throw new InvalidDataException("Offset outside of the container");
-            cfs.Seek((long)offset, SeekOrigin.Begin);
-            if ((long)compSize < 0 || (long)compSize > (cfs.Length - (long)offset)) throw new InvalidDataException("End of file reached, data is too big.");
-
-            var comp = ArrayPool<byte>.Shared.Rent((int)compSize);
-            try
-            {
-                int read = cfs.Read(comp, 0, (int)compSize);
-                if (read != (int)compSize) throw new EndOfStreamException();
+                cfs.Seek(offset, SeekOrigin.Begin);
+                ReadExactly(cfs, comp, 0, (int)compSize);
 
                 if (compSize == uncSize)
                 {
-                    var same = new byte[(int)uncSize];
+                    byte[] same = new byte[(int)uncSize];
                     Buffer.BlockCopy(comp, 0, same, 0, (int)uncSize);
                     return same;
                 }
 
-                var raw = new byte[(int)uncSize];
+                if (_oodleDisabled)
+                    throw new InvalidDataException("Oodle decompression is disabled after earlier failures.");
+
+                byte[] raw = new byte[(int)uncSize];
                 try
                 {
-                    if (!_oodleDisabled)
+                    int ret = NativeMethods.OodleLZ_Decompress(
+                        comp, compSize,
+                        raw, uncSize,
+                        1, 0, 0,
+                        IntPtr.Zero, IntPtr.Zero,
+                        IntPtr.Zero, IntPtr.Zero,
+                        IntPtr.Zero, IntPtr.Zero,
+                        0);
+
+                    if (ret > 0)
                     {
-                        int ret = NativeMethods.OodleLZ_Decompress(comp, (long)compSize, raw, (long)uncSize, 1, 0, 0,
-                            IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 0);
-
-                        if (ret > 0 || (ret == 0 && LikelyDecompressed(raw)))
-                        {
-                            _oodleFailCount = 0;
-                            return raw;
-                        }
-
-                        _oodleFailCount++;
-                        if (_oodleFailCount >= 999999999)
-                        {
-                            _oodleDisabled = true;
-                            options.Logger?.Invoke("⛔ turn off Oodle (999999999 failed attempts). Extracting compressed data.");
-                        }
-                        else
-                        {
-                            options.Logger?.Invoke("⚠️ Oodle returned error — Compressed data saved.");
-                        }
+                        _oodleFailCount = 0;
+                        return raw;
                     }
-                    var compCopy = new byte[(int)compSize];
-                    Buffer.BlockCopy(comp, 0, compCopy, 0, (int)compSize);
-                    return compCopy;
 
+                    _oodleFailCount++;
+                    if (_oodleFailCount >= 64)
+                    {
+                        _oodleDisabled = true;
+                        options.Logger?.Invoke("⛔ Oodle disabled after 64 failed decompression attempts.");
+                    }
+
+                    throw new InvalidDataException($"Oodle returned {ret} for comp={compSize}, raw={uncSize}.");
                 }
                 catch (DllNotFoundException)
                 {
-                    options.Logger?.Invoke("⚠️ Oodle DLL not loaded — saving compressed data.");
-                    var compCopy = new byte[(int)compSize];
-                    Buffer.BlockCopy(comp, 0, compCopy, 0, (int)compSize);
-                    return compCopy;
+                    if (!_oodleMissingWarned)
+                    {
+                        _oodleMissingWarned = true;
+                        options.Logger?.Invoke("⚠️ oo2core_7_win64.dll is missing. Compressed files cannot be extracted correctly.");
+                    }
+                    throw;
                 }
                 catch (EntryPointNotFoundException)
                 {
-                    options.Logger?.Invoke("⚠️ Could not find entry point for oodle. Saving compressed data");
-                    var compCopy = new byte[(int)compSize];
-                    Buffer.BlockCopy(comp, 0, compCopy, 0, (int)compSize);
-                    return compCopy;
-                }
-                catch (Exception ex)
-                {
-                    options.Logger?.Invoke("⚠️ Oodle decompression failed: " + ex.Message + " — saving compressed data.");
-                    var compCopy = new byte[(int)compSize];
-                    Buffer.BlockCopy(comp, 0, compCopy, 0, (int)compSize);
-                    return compCopy;
+                    if (!_oodleEntryPointWarned)
+                    {
+                        _oodleEntryPointWarned = true;
+                        options.Logger?.Invoke("⚠️ Oodle entry point not found. Check oo2core_7_win64.dll version.");
+                    }
+                    throw;
                 }
             }
             finally
@@ -1001,132 +477,597 @@ namespace B2IndexExtractor
             }
         }
 
-        private static string TryReadCString(FileStream fs, long offset)
+        private static void ReadExactly(Stream stream, byte[] buffer, int offset, int count)
         {
-            try { return ReadCString(fs, offset); } catch { return ""; }
-        }
-        private static string ReadCString(BinaryReader br)
-        {
-            var bytes = new List<byte>();
-            byte b; while ((b = br.ReadByte()) != 0) bytes.Add(b);
-            return Encoding.UTF8.GetString(bytes.ToArray());
-        }
-        private static string ReadCString(FileStream fs, long offset)
-        {
-            fs.Seek(offset, SeekOrigin.Begin);
-            int b; var bytes = new List<byte>();
-            while ((b = fs.ReadByte()) > 0) bytes.Add((byte)b);
-            return Encoding.UTF8.GetString(bytes.ToArray());
-        }
-
-        private static int ReadInt32Safe(BinaryReader br, long absoluteOffset)
-        {
-            long cur = br.BaseStream.Position;
-            try { br.BaseStream.Seek(absoluteOffset, SeekOrigin.Begin); return br.ReadInt32(); }
-            catch { return -1; }
-            finally { br.BaseStream.Seek(cur, SeekOrigin.Begin); }
-        }
-
-        // quick, memory based method for unique names
-        private static string EnsureUniqueFast(string desiredAbsPath, string relKey)
-        {
-            string dir = Path.GetDirectoryName(desiredAbsPath)!;
-            string name = Path.GetFileNameWithoutExtension(desiredAbsPath);
-            string ext = Path.GetExtension(desiredAbsPath);
-
-            if (_usedRelPaths.Add(relKey) && !File.Exists(desiredAbsPath))
-                return desiredAbsPath;
-
-            int i = 1;
-            while (true)
+            int total = 0;
+            while (total < count)
             {
-                string rel = $"{name}_{i}{ext}";
-                if (_usedRelPaths.Add(rel))
-                {
-                    string abs = Path.Combine(dir, rel);
-                    if (!File.Exists(abs)) return abs;
-                }
-                i++;
+                int read = stream.Read(buffer, offset + total, count - total);
+                if (read <= 0)
+                    throw new EndOfStreamException();
+                total += read;
             }
+        }
+
+        private static string ResolveContainerFileName(B2ContainerRecord container)
+        {
+            string name = container.Name ?? string.Empty;
+            name = name.Replace('\\', '/').Trim();
+            name = Path.GetFileName(name);
+
+            if (string.IsNullOrWhiteSpace(name))
+                name = "unknown";
+
+            if (!name.EndsWith(".b2container", StringComparison.OrdinalIgnoreCase))
+                name += ".b2container";
+
+            return name;
         }
 
         private static string NormalizeRelPath(string input)
         {
-            if (string.IsNullOrWhiteSpace(input)) return "unnamed.bin";
-            var s = input.Replace('\\', '/');
-            while (s.StartsWith("/")) s = s.Substring(1);
+            if (string.IsNullOrWhiteSpace(input))
+                return "unnamed.bin";
+
+            string s = input.Replace('\\', '/').Trim();
+
             int colon = s.IndexOf(':');
-            if (colon >= 0) { s = s.Substring(colon + 1); if (s.StartsWith("/")) s = s.Substring(1); }
+            if (colon >= 0)
+                s = s[(colon + 1)..];
+
             var invalid = Path.GetInvalidFileNameChars();
             var parts = s.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
-            for (int i = 0; i < parts.Length; i++)
+            var safe = new List<string>(parts.Length);
+
+            foreach (string rawPart in parts)
             {
-                var p = parts[i];
-                foreach (var ch in invalid) p = p.Replace(ch.ToString(), "_");
-                var u = p.ToUpperInvariant();
-                if (u == "CON" || u == "PRN" || u == "AUX" || u == "NUL" ||
-                    u == "COM1" || u == "COM2" || u == "COM3" || u == "COM4" || u == "COM5" || u == "COM6" || u == "COM7" || u == "COM8" || u == "COM9" ||
-                    u == "LPT1" || u == "LPT2" || u == "LPT3" || u == "LPT4" || u == "LPT5" || u == "LPT6" || u == "LPT7" || u == "LPT8" || u == "LPT9")
-                    p = "_" + p;
-                parts[i] = p;
+                string part = rawPart.Trim();
+                if (part.Length == 0 || part == "." || part == "..")
+                    continue;
+
+                foreach (char ch in invalid)
+                    part = part.Replace(ch, '_');
+
+                part = part.TrimEnd(' ', '.');
+                if (part.Length == 0)
+                    part = "_";
+
+                string upper = part.ToUpperInvariant();
+                if (upper is "CON" or "PRN" or "AUX" or "NUL"
+                    or "COM1" or "COM2" or "COM3" or "COM4" or "COM5" or "COM6" or "COM7" or "COM8" or "COM9"
+                    or "LPT1" or "LPT2" or "LPT3" or "LPT4" or "LPT5" or "LPT6" or "LPT7" or "LPT8" or "LPT9")
+                {
+                    part = "_" + part;
+                }
+
+                safe.Add(part);
             }
-            var joined = string.Join("/", parts);
-            if (string.IsNullOrEmpty(joined)) joined = "unnamed.bin";
-            return joined;
+
+            return safe.Count == 0 ? "unnamed.bin" : string.Join("/", safe);
         }
 
-        private static bool LooksLikeDirectoryName(string rel)
+        private static string SafeCombineOutput(string outputRoot, string relPath)
         {
-            if (string.IsNullOrWhiteSpace(rel)) return true;
-            if (rel.EndsWith("/") || rel.EndsWith("\\")) return true;
-            var trimmed = rel.TrimEnd('/', '\\');
-            var fileName = Path.GetFileName(trimmed);
-            if (string.IsNullOrEmpty(fileName)) return true;
-            return false;
+            string root = Path.GetFullPath(outputRoot);
+            string candidate = Path.GetFullPath(Path.Combine(root, relPath.Replace('/', Path.DirectorySeparatorChar)));
+
+            string rootWithSep = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            if (!candidate.StartsWith(rootWithSep, StringComparison.OrdinalIgnoreCase) && !string.Equals(candidate, root, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"Path traversal detected: {relPath}");
+
+            return candidate;
         }
 
-        // --- Cache helpers ---
+        private static string EnsureUniquePath(string desiredAbsPath)
+        {
+            string relKey = desiredAbsPath.ToLowerInvariant();
+            if (_usedRelPaths.Add(relKey) && !File.Exists(desiredAbsPath))
+                return desiredAbsPath;
+
+            string dir = Path.GetDirectoryName(desiredAbsPath) ?? string.Empty;
+            string name = Path.GetFileNameWithoutExtension(desiredAbsPath);
+            string ext = Path.GetExtension(desiredAbsPath);
+
+            int i = 1;
+            while (true)
+            {
+                string candidate = Path.Combine(dir, $"{name}_{i}{ext}");
+                string key = candidate.ToLowerInvariant();
+                if (_usedRelPaths.Add(key) && !File.Exists(candidate))
+                    return candidate;
+                i++;
+            }
+        }
+
         private static FileStream GetContainer(string containerPath, ExtractOptions options)
         {
-            if (_containerCache.TryGetValue(containerPath, out var fs) && fs.CanRead)
-                return fs;
+            if (_containerCache.TryGetValue(containerPath, out FileStream? existing) && existing.CanRead)
+                return existing;
 
             var stream = new FileStream(
                 containerPath,
                 FileMode.Open,
                 FileAccess.Read,
                 FileShare.Read,
-                bufferSize: 1 << 16,
+                bufferSize: 1 << 20,
                 options: FileOptions.RandomAccess);
 
             _containerCache[containerPath] = stream;
-            options.Logger?.Invoke($"🗃️ Opening container: {containerPath}");
+            options.Logger?.Invoke($"🗃️ Opening container: {Path.GetFileName(containerPath)}");
             return stream;
         }
 
         private static void CloseAllContainers()
         {
-            foreach (var kv in _containerCache)
+            foreach (var stream in _containerCache.Values)
             {
-                try { kv.Value.Dispose(); } catch { }
+                try { stream.Dispose(); } catch { }
             }
             _containerCache.Clear();
         }
 
-        private static void BuildExistingNameIndex(string outputDir, Action<string>? log)
+        private readonly struct PathFile
         {
-            _existingNames.Clear();
-            if (!Directory.Exists(outputDir)) return;
+            public readonly string VirtualPath;
+            public readonly int FileEntryIndex;
 
-            int cnt = 0;
-            foreach (var abs in Directory.EnumerateFiles(outputDir, "*", SearchOption.AllDirectories))
+            public PathFile(string virtualPath, int fileEntryIndex)
             {
-                var name = Path.GetFileName(abs);
-                if (string.IsNullOrEmpty(name)) continue;
-                _existingNames.Add(name);
-                cnt++;
+                VirtualPath = virtualPath;
+                FileEntryIndex = fileEntryIndex;
             }
-            log?.Invoke($"📝 Loaded existing file index: {_existingNames.Count} unique names ({cnt} files).");
+        }
+
+        private sealed class B2Index
+        {
+            public readonly B2Header Header;
+            public readonly B2GroupDependencyRecord[] GroupDependencies;
+            public readonly B2ContainerRecord[] Containers;
+            public readonly B2ChunkDescRecord[] Chunks;
+            public readonly B2BlockRecord[] Blocks;
+            public readonly B2FileEntryRecord[] FileEntries;
+            public readonly int[] PathAux;
+            public readonly B2PathNodeRecord[] PathNodes;
+            public readonly int RootPathNodeIndex;
+
+            private readonly byte[] _data;
+            private readonly Dictionary<ulong, string> _stringCache = new();
+
+            private B2Index(
+                byte[] data,
+                B2Header header,
+                B2GroupDependencyRecord[] groupDependencies,
+                B2ContainerRecord[] containers,
+                B2ChunkDescRecord[] chunks,
+                B2BlockRecord[] blocks,
+                B2FileEntryRecord[] fileEntries,
+                int[] pathAux,
+                B2PathNodeRecord[] pathNodes)
+            {
+                _data = data;
+                Header = header;
+                GroupDependencies = groupDependencies;
+                Containers = containers;
+                Chunks = chunks;
+                Blocks = blocks;
+                FileEntries = fileEntries;
+                PathAux = pathAux;
+                PathNodes = pathNodes;
+                RootPathNodeIndex = PtrToIndexOrDefault(header.RootPathNodePtr, header.PathNodeTableOffset, PathNodeRecordSize, pathNodes.Length, 0);
+            }
+
+            public string GetString(ulong offset)
+            {
+                if (_stringCache.TryGetValue(offset, out string? cached))
+                    return cached;
+
+                string value = ReadCString(_data, offset);
+                _stringCache[offset] = value;
+                return value;
+            }
+
+            public static B2Index Parse(byte[] data, Action<string>? logger)
+            {
+                B2Header header = ReadHeader(data);
+                ValidateHeader(data, header);
+
+                if ((ulong)data.LongLength != header.FileSize)
+                    logger?.Invoke($"⚠️ Header file size is 0x{header.FileSize:X}, actual file size is 0x{data.LongLength:X}.");
+
+                B2GroupDependencyRecord[] groupDependencies = ReadGroupDependencies(data, header);
+                B2ChunkDescRecord[] chunks = ReadChunks(data, header);
+                B2ContainerRecord[] containers = ReadContainers(data, header, checked((int)header.GroupDependencyCount));
+                B2BlockRecord[] blocks = ReadBlocks(data, header, containers.Length, chunks.Length);
+                B2FileEntryRecord[] fileEntries = ReadFileEntries(data, header, blocks.Length);
+                int[] pathAux = ReadPathAux(data, header);
+                B2PathNodeRecord[] pathNodes = ReadPathNodes(data, header);
+
+                return new B2Index(data, header, groupDependencies, containers, chunks, blocks, fileEntries, pathAux, pathNodes);
+            }
+
+            private static B2Header ReadHeader(byte[] d)
+            {
+                if (d.Length < HeaderSize)
+                    throw new InvalidDataException("File is too small for B2 header.");
+
+                if (d[0] != (byte)'T' || d[1] != (byte)'C' || d[2] != (byte)'B' || d[3] != (byte)'2')
+                    throw new InvalidDataException("Not a TCB2 .b2index file.");
+
+                return new B2Header(
+                    version: ReadUInt32(d, 0x04),
+                    fileSize: ReadUInt64(d, 0x08),
+                    rootPathNodePtr: ReadUInt64(d, 0x10),
+                    packageInfoCacheFileEntryPtr: ReadUInt64(d, 0x18),
+                    groupDependencyTableOffset: ReadUInt64(d, 0x20),
+                    groupDependencyCount: ReadUInt32(d, 0x28),
+                    containerTableOffset: ReadUInt64(d, 0x2C),
+                    containerCount: ReadUInt32(d, 0x34),
+                    blockTableOffset: ReadUInt64(d, 0x38),
+                    blockCount: ReadUInt32(d, 0x40),
+                    fileEntryTableOffset: ReadUInt64(d, 0x44),
+                    fileEntryCount: ReadUInt32(d, 0x4C),
+                    unknownPathAuxTableOffset: ReadUInt64(d, 0x50),
+                    unknownPathAuxCount: ReadUInt32(d, 0x58),
+                    pathNodeTableOffset: ReadUInt64(d, 0x5C),
+                    pathNodeCount: ReadUInt32(d, 0x64),
+                    stringBlobOffset: ReadUInt64(d, 0x68),
+                    stringBlobSize: ReadUInt32(d, 0x70),
+                    chunkDescTableOffset: ReadUInt64(d, 0x74),
+                    chunkDescCount: ReadUInt32(d, 0x7C));
+            }
+
+            private static void ValidateHeader(byte[] data, B2Header h)
+            {
+                ValidateRange(data, h.GroupDependencyTableOffset, h.GroupDependencyCount, GroupDependencyRecordSize, nameof(h.GroupDependencyTableOffset));
+                ValidateRange(data, h.ContainerTableOffset, h.ContainerCount, ContainerRecordSize, nameof(h.ContainerTableOffset));
+                ValidateRange(data, h.ChunkDescTableOffset, h.ChunkDescCount, ChunkDescRecordSize, nameof(h.ChunkDescTableOffset));
+                ValidateRange(data, h.BlockTableOffset, h.BlockCount, BlockRecordSize, nameof(h.BlockTableOffset));
+                ValidateRange(data, h.FileEntryTableOffset, h.FileEntryCount, FileEntryRecordSize, nameof(h.FileEntryTableOffset));
+                ValidateRange(data, h.UnknownPathAuxTableOffset, h.UnknownPathAuxCount, 4, nameof(h.UnknownPathAuxTableOffset));
+                ValidateRange(data, h.PathNodeTableOffset, h.PathNodeCount, PathNodeRecordSize, nameof(h.PathNodeTableOffset));
+                ValidateRange(data, h.StringBlobOffset, h.StringBlobSize, 1, nameof(h.StringBlobOffset));
+            }
+
+            private static void ValidateRange(byte[] data, ulong offset, uint count, int stride, string name)
+            {
+                ulong byteCount = checked((ulong)count * (ulong)stride);
+                ulong end = checked(offset + byteCount);
+                if (offset > (ulong)data.LongLength || end > (ulong)data.LongLength)
+                    throw new InvalidDataException($"{name} range is outside file: offset=0x{offset:X}, count={count}, stride={stride}.");
+            }
+
+
+            private static B2GroupDependencyRecord[] ReadGroupDependencies(byte[] d, B2Header h)
+            {
+                var records = new B2GroupDependencyRecord[checked((int)h.GroupDependencyCount)];
+                for (int i = 0; i < records.Length; i++)
+                {
+                    int o = checked((int)h.GroupDependencyTableOffset + i * GroupDependencyRecordSize);
+                    ulong nameOffset = ReadUInt64(d, o + 0x00);
+                    ulong depsPtr = ReadUInt64(d, o + 0x08);
+                    int depsCount = checked((int)ReadUInt32(d, o + 0x10));
+
+                    var deps = Array.Empty<int>();
+                    if (depsCount > 0)
+                    {
+                        deps = new int[depsCount];
+                        for (int j = 0; j < depsCount; j++)
+                        {
+                            ulong depRecordPtr = ReadUInt64(d, checked((int)depsPtr + j * 8));
+                            deps[j] = PtrToIndexOrDefault(depRecordPtr, h.GroupDependencyTableOffset, GroupDependencyRecordSize, records.Length, -1);
+                        }
+                    }
+
+                    records[i] = new B2GroupDependencyRecord(
+                        nameOffset: nameOffset,
+                        name: ReadCString(d, nameOffset),
+                        dependenciesPtr: depsPtr,
+                        dependencyIndices: deps);
+                }
+
+                return records;
+            }
+
+            private static B2ContainerRecord[] ReadContainers(byte[] d, B2Header h, int groupDependencyCount)
+            {
+                var records = new B2ContainerRecord[checked((int)h.ContainerCount)];
+                for (int i = 0; i < records.Length; i++)
+                {
+                    int o = checked((int)h.ContainerTableOffset + i * ContainerRecordSize);
+                    records[i] = new B2ContainerRecord(
+                        name: ReadCString(d, ReadUInt64(d, o + 0x00)),
+                        suffix: ReadCString(d, ReadUInt64(d, o + 0x08)),
+                        groupRecordPtr: ReadUInt64(d, o + 0x10),
+                        groupIndex: PtrToIndexOrDefault(ReadUInt64(d, o + 0x10), h.GroupDependencyTableOffset, GroupDependencyRecordSize, groupDependencyCount, -1),
+                        containerSize: ReadUInt64(d, o + 0x18),
+                        firstBlockIndex: PtrToIndexOrDefault(ReadUInt64(d, o + 0x20), h.BlockTableOffset, BlockRecordSize, checked((int)h.BlockCount), -1),
+                        blockCount: checked((int)ReadUInt32(d, o + 0x28)),
+                        firstChunkIndex: PtrToIndexOrDefault(ReadUInt64(d, o + 0x2C), h.ChunkDescTableOffset, ChunkDescRecordSize, checked((int)h.ChunkDescCount), -1),
+                        chunkCount: checked((int)ReadUInt32(d, o + 0x34)));
+                }
+                return records;
+            }
+
+            private static B2ChunkDescRecord[] ReadChunks(byte[] d, B2Header h)
+            {
+                var records = new B2ChunkDescRecord[checked((int)h.ChunkDescCount)];
+                for (int i = 0; i < records.Length; i++)
+                {
+                    int o = checked((int)h.ChunkDescTableOffset + i * ChunkDescRecordSize);
+                    records[i] = new B2ChunkDescRecord(
+                        uncompressedSize: ReadUInt32(d, o + 0x00),
+                        compressedStartOffsetInBlock: ReadUInt32(d, o + 0x04),
+                        compressedEndOffsetInBlock: ReadUInt32(d, o + 0x08));
+                }
+                return records;
+            }
+
+            private static B2BlockRecord[] ReadBlocks(byte[] d, B2Header h, int containerCount, int chunkCount)
+            {
+                var records = new B2BlockRecord[checked((int)h.BlockCount)];
+                for (int i = 0; i < records.Length; i++)
+                {
+                    int o = checked((int)h.BlockTableOffset + i * BlockRecordSize);
+                    records[i] = new B2BlockRecord(
+                        containerIndex: PtrToIndexOrDefault(ReadUInt64(d, o + 0x00), h.ContainerTableOffset, ContainerRecordSize, containerCount, -1),
+                        logicalOffset: ReadUInt64(d, o + 0x08),
+                        physicalOffset: ReadUInt64(d, o + 0x10),
+                        flags: ReadUInt32(d, o + 0x18),
+                        firstChunkIndex: PtrToIndexOrDefault(ReadUInt64(d, o + 0x1C), h.ChunkDescTableOffset, ChunkDescRecordSize, chunkCount, -1),
+                        chunkCount: checked((int)ReadUInt32(d, o + 0x24)));
+                }
+                return records;
+            }
+
+            private static B2FileEntryRecord[] ReadFileEntries(byte[] d, B2Header h, int blockCount)
+            {
+                var records = new B2FileEntryRecord[checked((int)h.FileEntryCount)];
+                for (int i = 0; i < records.Length; i++)
+                {
+                    int o = checked((int)h.FileEntryTableOffset + i * FileEntryRecordSize);
+                    records[i] = new B2FileEntryRecord(
+                        blockIndex: PtrToIndexOrDefault(ReadUInt64(d, o + 0x00), h.BlockTableOffset, BlockRecordSize, blockCount, -1),
+                        offsetInBlock: ReadUInt32(d, o + 0x08),
+                        size: ReadUInt32(d, o + 0x0C));
+                }
+                return records;
+            }
+
+            private static int[] ReadPathAux(byte[] d, B2Header h)
+            {
+                var records = new int[checked((int)h.UnknownPathAuxCount)];
+                for (int i = 0; i < records.Length; i++)
+                {
+                    int o = checked((int)h.UnknownPathAuxTableOffset + i * 4);
+                    records[i] = ReadInt32(d, o);
+                }
+                return records;
+            }
+
+            private static B2PathNodeRecord[] ReadPathNodes(byte[] d, B2Header h)
+            {
+                var records = new B2PathNodeRecord[checked((int)h.PathNodeCount)];
+                for (int i = 0; i < records.Length; i++)
+                {
+                    int o = checked((int)h.PathNodeTableOffset + i * PathNodeRecordSize);
+                    records[i] = new B2PathNodeRecord(
+                        nameOffset: ReadUInt64(d, o + 0x00),
+                        firstChildOrFileEntryIndex: ReadUInt32(d, o + 0x08),
+                        childCount: ReadInt32(d, o + 0x0C));
+                }
+                return records;
+            }
+
+            private static int PtrToIndexOrDefault(ulong ptr, ulong tableOffset, int stride, int count, int fallback)
+            {
+                if (ptr < tableOffset)
+                    return fallback;
+
+                ulong delta = ptr - tableOffset;
+                if (delta % (ulong)stride != 0)
+                    return fallback;
+
+                ulong index = delta / (ulong)stride;
+                if (index >= (ulong)count)
+                    return fallback;
+
+                return checked((int)index);
+            }
+
+            private static uint ReadUInt32(byte[] d, int o) => BitConverter.ToUInt32(d, o);
+            private static int ReadInt32(byte[] d, int o) => BitConverter.ToInt32(d, o);
+            private static ulong ReadUInt64(byte[] d, int o) => BitConverter.ToUInt64(d, o);
+
+            private static string ReadCString(byte[] d, ulong offset)
+            {
+                if (offset >= (ulong)d.LongLength)
+                    return string.Empty;
+
+                int start = checked((int)offset);
+                int end = start;
+                while (end < d.Length && d[end] != 0)
+                    end++;
+
+                if (end <= start)
+                    return string.Empty;
+
+                return Encoding.UTF8.GetString(d, start, end - start);
+            }
+        }
+
+        private readonly struct B2Header
+        {
+            public readonly uint Version;
+            public readonly ulong FileSize;
+            public readonly ulong RootPathNodePtr;
+            public readonly ulong PackageInfoCacheFileEntryPtr;
+            public readonly ulong GroupDependencyTableOffset;
+            public readonly uint GroupDependencyCount;
+            public readonly ulong ContainerTableOffset;
+            public readonly uint ContainerCount;
+            public readonly ulong BlockTableOffset;
+            public readonly uint BlockCount;
+            public readonly ulong FileEntryTableOffset;
+            public readonly uint FileEntryCount;
+            public readonly ulong UnknownPathAuxTableOffset;
+            public readonly uint UnknownPathAuxCount;
+            public readonly ulong PathNodeTableOffset;
+            public readonly uint PathNodeCount;
+            public readonly ulong StringBlobOffset;
+            public readonly uint StringBlobSize;
+            public readonly ulong ChunkDescTableOffset;
+            public readonly uint ChunkDescCount;
+
+            public B2Header(
+                uint version,
+                ulong fileSize,
+                ulong rootPathNodePtr,
+                ulong packageInfoCacheFileEntryPtr,
+                ulong groupDependencyTableOffset,
+                uint groupDependencyCount,
+                ulong containerTableOffset,
+                uint containerCount,
+                ulong blockTableOffset,
+                uint blockCount,
+                ulong fileEntryTableOffset,
+                uint fileEntryCount,
+                ulong unknownPathAuxTableOffset,
+                uint unknownPathAuxCount,
+                ulong pathNodeTableOffset,
+                uint pathNodeCount,
+                ulong stringBlobOffset,
+                uint stringBlobSize,
+                ulong chunkDescTableOffset,
+                uint chunkDescCount)
+            {
+                Version = version;
+                FileSize = fileSize;
+                RootPathNodePtr = rootPathNodePtr;
+                PackageInfoCacheFileEntryPtr = packageInfoCacheFileEntryPtr;
+                GroupDependencyTableOffset = groupDependencyTableOffset;
+                GroupDependencyCount = groupDependencyCount;
+                ContainerTableOffset = containerTableOffset;
+                ContainerCount = containerCount;
+                BlockTableOffset = blockTableOffset;
+                BlockCount = blockCount;
+                FileEntryTableOffset = fileEntryTableOffset;
+                FileEntryCount = fileEntryCount;
+                UnknownPathAuxTableOffset = unknownPathAuxTableOffset;
+                UnknownPathAuxCount = unknownPathAuxCount;
+                PathNodeTableOffset = pathNodeTableOffset;
+                PathNodeCount = pathNodeCount;
+                StringBlobOffset = stringBlobOffset;
+                StringBlobSize = stringBlobSize;
+                ChunkDescTableOffset = chunkDescTableOffset;
+                ChunkDescCount = chunkDescCount;
+            }
+        }
+
+
+        private readonly struct B2GroupDependencyRecord
+        {
+            public readonly ulong NameOffset;
+            public readonly string Name;
+            public readonly ulong DependenciesPtr;
+            public readonly int[] DependencyIndices;
+
+            public B2GroupDependencyRecord(ulong nameOffset, string name, ulong dependenciesPtr, int[] dependencyIndices)
+            {
+                NameOffset = nameOffset;
+                Name = name;
+                DependenciesPtr = dependenciesPtr;
+                DependencyIndices = dependencyIndices;
+            }
+        }
+
+        private readonly struct B2ContainerRecord
+        {
+            public readonly string Name;
+            public readonly string Suffix;
+            public readonly ulong GroupRecordPtr;
+            public readonly int GroupIndex;
+            public readonly ulong ContainerSize;
+            public readonly int FirstBlockIndex;
+            public readonly int BlockCount;
+            public readonly int FirstChunkIndex;
+            public readonly int ChunkCount;
+
+            public B2ContainerRecord(string name, string suffix, ulong groupRecordPtr, int groupIndex, ulong containerSize, int firstBlockIndex, int blockCount, int firstChunkIndex, int chunkCount)
+            {
+                Name = name;
+                Suffix = suffix;
+                GroupRecordPtr = groupRecordPtr;
+                GroupIndex = groupIndex;
+                ContainerSize = containerSize;
+                FirstBlockIndex = firstBlockIndex;
+                BlockCount = blockCount;
+                FirstChunkIndex = firstChunkIndex;
+                ChunkCount = chunkCount;
+            }
+        }
+
+        private readonly struct B2ChunkDescRecord
+        {
+            public readonly uint UncompressedSize;
+            public readonly uint CompressedStartOffsetInBlock;
+            public readonly uint CompressedEndOffsetInBlock;
+
+            public B2ChunkDescRecord(uint uncompressedSize, uint compressedStartOffsetInBlock, uint compressedEndOffsetInBlock)
+            {
+                UncompressedSize = uncompressedSize;
+                CompressedStartOffsetInBlock = compressedStartOffsetInBlock;
+                CompressedEndOffsetInBlock = compressedEndOffsetInBlock;
+            }
+        }
+
+        private readonly struct B2BlockRecord
+        {
+            public readonly int ContainerIndex;
+            public readonly ulong LogicalOffset;
+            public readonly ulong PhysicalOffset;
+            public readonly uint Flags;
+            public readonly int FirstChunkIndex;
+            public readonly int ChunkCount;
+
+            public B2BlockRecord(int containerIndex, ulong logicalOffset, ulong physicalOffset, uint flags, int firstChunkIndex, int chunkCount)
+            {
+                ContainerIndex = containerIndex;
+                LogicalOffset = logicalOffset;
+                PhysicalOffset = physicalOffset;
+                Flags = flags;
+                FirstChunkIndex = firstChunkIndex;
+                ChunkCount = chunkCount;
+            }
+        }
+
+        private readonly struct B2FileEntryRecord
+        {
+            public readonly int BlockIndex;
+            public readonly uint OffsetInBlock;
+            public readonly uint Size;
+
+            public B2FileEntryRecord(int blockIndex, uint offsetInBlock, uint size)
+            {
+                BlockIndex = blockIndex;
+                OffsetInBlock = offsetInBlock;
+                Size = size;
+            }
+        }
+
+        private readonly struct B2PathNodeRecord
+        {
+            public readonly ulong NameOffset;
+            public readonly uint FirstChildOrFileEntryIndex;
+            public readonly int ChildCount;
+
+            public bool IsFile => ChildCount == -1;
+
+            public B2PathNodeRecord(ulong nameOffset, uint firstChildOrFileEntryIndex, int childCount)
+            {
+                NameOffset = nameOffset;
+                FirstChildOrFileEntryIndex = firstChildOrFileEntryIndex;
+                ChildCount = childCount;
+            }
         }
     }
 }

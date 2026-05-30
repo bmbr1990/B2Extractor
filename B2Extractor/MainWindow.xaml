@@ -25,13 +25,6 @@
         <Button Grid.Row="1" Grid.Column="2" Margin="8,8,0,0" Padding="16,6" Click="BrowseOutput_Click" ToolTip="Select the output directory for extracted files." >Browse…</Button>
 
         <WrapPanel Grid.Row="2" Grid.ColumnSpan="3" Orientation="Horizontal" Margin="0,8,0,0">
-
-            <CheckBox x:Name="UseHeaderPath" IsChecked="True" Margin="0,5,15,5" ToolTip="Try to reconstruct the original folder path from package headers.">
-                    <TextBlock>Detect Path from UAsset header</TextBlock>
-                </CheckBox>
-            <CheckBox x:Name="UseContentHeuristic" IsChecked="True" Margin="0,5,15,5" ToolTip="Analyze package content to guess the original folder path when header info is missing.">
-                    <TextBlock>Detect Path from UAsset Content</TextBlock>
-            </CheckBox>
             <CheckBox x:Name="OnlyAssetsCheckBox"  Margin="0,5,15,5" ToolTip="Extract only asset-related files (.uasset, .ubulk, .umap) and skip others."  Checked="OnlyAssetsCheckBox_Checked" Unchecked="OnlyAssetsCheckBox_Unchecked">
                 <TextBlock>Extract Assets Only
                 </TextBlock>
