@@ -33,7 +33,7 @@ The project automatically reconstructs the file structure, supports Oodle decomp
 ## Requirements
 
 - **.NET 6/7/8+** (WPF)
-- **oo2core_7_win64.dll** file in the program directory - can be found in modern games like Elden Ring or Smire, or downloaded from Google ( on your own responsibility )
+- **oo2core_7_win64.dll** file in the program directory - can be found in modern games like Elden Ring or Smite, or downloaded from Google ( on your own responsibility )
 
 ---
 
