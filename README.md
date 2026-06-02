@@ -18,7 +18,7 @@ The project automatically reconstructs the file structure, supports Oodle decomp
 
 - 📦 **File extraction** from `.b2index` and associated `.b2container`.
 - 🔄 **Oodle support (oo2core_7_win64.dll)**
-- 📂 **Full path recovery** Based on `.uasset/.umap` headers.
+- 📂 **Full path recovery**.
 - 🎛️ **Filtering options**:
   - Skip WEM files
   - Skip Bink files
@@ -69,7 +69,7 @@ Możesz pobrać aktualną wersje pod tym linkiem:
 
 - 📦 **Ekstrakcja plików** z `.b2index` i powiązanych `.b2container`.
 - 🔄 **Obsługa Oodle (oo2core_7_win64.dll)**
-- 📂 **Odzyskiwanie pełnych ścieżek** Na podstawie nagłówków plików `.uasset/.umap`.
+- 📂 **Odzyskiwanie pełnych ścieżek**.
 - 🎛️ **Opcje filtrowania**:
 	- Pomijanie plików WEM
 	- Pomijanie plików Bink
